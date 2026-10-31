@@ -1,0 +1,315 @@
+---
+import Base from "../../layouts/Base.astro";
+---
+
+<Base title="Import und Export" section="library">
+  <div class="page-head">
+    <div>
+      <a class="crumb" href="/library/">Musikbibliothek</a>
+      <h1>Import und Export</h1>
+      <p class="lede">
+        Bringe Bibliotheken und Playlists aus anderen Diensten mit. Vor dem Speichern siehst du,
+        welche Tracks neu sind, welche du schon hast und was nicht lesbar war.
+      </p>
+    </div>
+  </div>
+
+  <div id="content">
+    <ol class="steps" aria-label="Ablauf">
+      <li aria-current="step"><b>1</b>Datei wählen</li>
+      <li><b>2</b>Vorschau prüfen</li>
+      <li><b>3</b>Import bestätigen</li>
+    </ol>
+
+    <form class="panel upload" id="upload-form">
+      <label class="drop" id="drop" for="file">
+        <input type="file" id="file" name="file" accept=".csv,.tsv,.txt,.json" />
+        <span class="drop-title" id="drop-title">Datei hierher ziehen oder auswählen</span>
+        <span class="drop-hint" id="drop-hint">CSV, TSV, TXT oder JSON</span>
+      </label>
+      <div class="upload-row">
+        <label class="field">
+          Format
+          <select name="format" id="format"><option value="">Automatisch erkennen</option></select>
+        </label>
+        <button type="submit" id="analyze" disabled>Datei prüfen</button>
+      </div>
+      <p class="form-error" id="upload-error" role="alert"></p>
+    </form>
+
+    <details class="formats">
+      <summary>Welche Dateien funktionieren?</summary>
+      <dl>
+        <dt>TuneMyMusic</dt>
+        <dd>CSV-Export mit „Track name“, „Artist name“, „Album“, „Playlist name“, „ISRC“ und Spotify-IDs. Mehrere Playlists in einer Datei.</dd>
+        <dt>Soundiiz</dt>
+        <dd>CSV mit den Spalten „title“, „artist“, „album“, „isrc“ (Komma oder Semikolon).</dd>
+        <dt>Exportify</dt>
+        <dd>Spotify-Playlist-Export mit „Track URI“, „Track Name“, „Artist Name(s)“ und weiteren Spalten.</dd>
+        <dt>Eigene CSV</dt>
+        <dd>Mindestens Titel und Artist; erkannt werden u. a. Dauer, Version, Album, ISRC, Plattform-Links, Playlist und Position.</dd>
+        <dt>Textliste</dt>
+        <dd>Eine Zeile pro Track im Muster „Artist - Titel“, optional mit Nummer, Dauer und Link.</dd>
+        <dt>MusicHub</dt>
+        <dd>Eigene CSV- und JSON-Exporte; Tracks werden dabei über ihre ID wiedererkannt.</dd>
+      </dl>
+    </details>
+
+    <section aria-labelledby="export-title">
+      <h2 id="export-title">Gesamte Bibliothek exportieren</h2>
+      <p class="muted">
+        Alle Tracks mit Metadaten, Plattform-Links, Tags und Playlist-Zuordnungen. Beide Dateien
+        lassen sich später wieder importieren, ohne Duplikate zu erzeugen.
+      </p>
+      <div class="actions">
+        <button type="button" class="ghost" data-export="csv">Als CSV exportieren</button>
+        <button type="button" class="ghost" data-export="json">Als JSON exportieren</button>
+      </div>
+    </section>
+
+    <section aria-labelledby="log-title">
+      <h2 id="log-title">Importprotokoll</h2>
+      <div class="table-wrap">
+        <table class="data">
+          <thead>
+            <tr>
+              <th scope="col">Datei</th>
+              <th scope="col" class="hide-sm">Format</th>
+              <th scope="col">Status</th>
+              <th scope="col" class="right hide-sm">Ergebnis</th>
+              <th scope="col" class="right hide-sm">Zeitpunkt</th>
+            </tr>
+          </thead>
+          <tbody id="runs"><tr><td colspan="5" class="empty">Lade …</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</Base>
+
+<script>
+  import { createSession, requireLogin } from "../../lib/session";
+  import type { ImportFormats, ImportRun } from "../../lib/types";
+  import { $, downloadFile, errorMessage, formatBytes, formatDateTime, h, plural } from "../../lib/ui";
+
+  const { api, tokens } = createSession();
+  const form = $<HTMLFormElement>("#upload-form");
+  const input = $<HTMLInputElement>("#file");
+  const button = $<HTMLButtonElement>("#analyze");
+  const error = $("#upload-error");
+  let limits: ImportFormats | null = null;
+  let chosen: File | null = null;
+
+  const STATUS: Record<ImportRun["status"], string> = {
+    analyzed: "Wartet auf Bestätigung",
+    committed: "Importiert",
+    discarded: "Verworfen",
+    failed: "Abgelehnt",
+  };
+
+  function choose(file: File | null) {
+    chosen = file;
+    error.textContent = "";
+    button.disabled = true;
+    if (!file) return;
+    const ext = file.name.includes(".") ? `.${file.name.split(".").pop()?.toLowerCase()}` : "";
+    $("#drop-title").textContent = file.name;
+    $("#drop-hint").textContent = formatBytes(file.size);
+    if (limits && !limits.extensions.includes(ext)) {
+      error.textContent = `Dateityp „${ext || "ohne Endung"}“ wird nicht unterstützt (${limits.extensions.join(", ")}).`;
+      return;
+    }
+    if (limits && file.size > limits.max_bytes) {
+      error.textContent = `Die Datei ist größer als ${formatBytes(limits.max_bytes)}.`;
+      return;
+    }
+    button.disabled = false;
+  }
+
+  input.addEventListener("change", () => choose(input.files?.[0] ?? null));
+  const drop = $("#drop");
+  drop.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    drop.classList.add("over");
+  });
+  drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+  drop.addEventListener("drop", (e) => {
+    e.preventDefault();
+    drop.classList.remove("over");
+    choose(e.dataTransfer?.files[0] ?? null);
+  });
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!chosen) return;
+    button.disabled = true;
+    button.textContent = "Wird geprüft …";
+    try {
+      const run = await api.uploadImport(chosen, ($("#format") as HTMLSelectElement).value || undefined);
+      location.href = `/import/run/?id=${run.id}`;
+    } catch (err) {
+      error.textContent = errorMessage(err);
+      button.disabled = false;
+      button.textContent = "Datei prüfen";
+      loadRuns();
+    }
+  });
+
+  for (const btn of document.querySelectorAll<HTMLButtonElement>("[data-export]")) {
+    btn.addEventListener("click", () => downloadFile(api, `/api/v1/export/library?format=${btn.dataset["export"]}`));
+  }
+
+  function result(run: ImportRun): string {
+    const s = run.summary;
+    if (run.status === "committed") return `${s.created ?? 0} neu, ${s.linked ?? 0} vorhanden`;
+    if (run.status === "analyzed") return plural(s.total ?? 0, "Datensatz", "Datensätze");
+    if (run.status === "failed") return run.error ?? "";
+    return "";
+  }
+
+  async function loadRuns() {
+    const body = $("#runs");
+    try {
+      const page = await api.listImports(30);
+      if (!page.items.length) {
+        body.replaceChildren(h("tr", {}, h("td", { colspan: 5, class: "empty" }, "Noch keine Importe.")));
+        return;
+      }
+      body.replaceChildren(
+        ...page.items.map((run) => {
+          const href = `/import/run/?id=${run.id}`;
+          const row = h(
+            "tr",
+            { class: "link-row" },
+            h("td", { class: "t-title" }, h("a", { href }, run.filename), h("span", { class: "t-sub" }, STATUS[run.status])),
+            h("td", { class: "hide-sm muted" }, run.format_label ?? "–"),
+            h("td", {}, h("span", { class: "run-status", "data-status": run.status }, STATUS[run.status])),
+            h("td", { class: "right hide-sm muted run-result" }, result(run)),
+            h("td", { class: "right hide-sm muted nowrap" }, formatDateTime(run.created_at)),
+          );
+          row.addEventListener("click", (ev) => {
+            if (!(ev.target as HTMLElement).closest("a")) location.href = href;
+          });
+          return row;
+        }),
+      );
+    } catch (err) {
+      body.replaceChildren(h("tr", {}, h("td", { colspan: 5, class: "empty" }, errorMessage(err))));
+    }
+  }
+
+  async function init() {
+    if (!requireLogin(tokens, $("#content"))) return;
+    try {
+      limits = await api.importFormats();
+      $("#drop-hint").textContent = `CSV, TSV, TXT oder JSON, höchstens ${formatBytes(limits.max_bytes)}`;
+      const select = $<HTMLSelectElement>("#format");
+      for (const f of limits.formats) select.append(h("option", { value: f.id }, f.label));
+    } catch {
+      /* Grenzen prüft der Server ohnehin */
+    }
+    loadRuns();
+  }
+  init();
+</script>
+
+<style is:global>
+  .upload {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .drop {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    min-height: 150px;
+    padding: 24px;
+    border: 1.5px dashed var(--line-strong);
+    border-radius: var(--r);
+    text-align: center;
+    cursor: pointer;
+  }
+  .drop:hover,
+  .drop.over,
+  .drop:focus-within {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .drop input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+  }
+  .drop-title {
+    font-weight: 600;
+    font-size: 1.05rem;
+    overflow-wrap: anywhere;
+  }
+  .drop-hint {
+    color: var(--muted);
+    font-size: 0.88rem;
+  }
+  .upload-row {
+    display: flex;
+    gap: 12px;
+    align-items: flex-end;
+    flex-wrap: wrap;
+  }
+  .upload-row .field {
+    flex: 0 1 280px;
+  }
+  .formats {
+    margin: 14px 0 40px;
+    color: var(--muted);
+  }
+  .formats summary {
+    cursor: pointer;
+    color: var(--ink);
+    width: fit-content;
+  }
+  .formats dl {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 6px 18px;
+    margin: 12px 0 0;
+    font-size: 0.9rem;
+    max-width: 80ch;
+  }
+  .formats dt {
+    color: var(--ink);
+    font-weight: 560;
+  }
+  .formats dd {
+    margin: 0;
+  }
+  .run-status {
+    font-size: 0.86rem;
+  }
+  .run-status[data-status="committed"] {
+    color: var(--ok);
+  }
+  .run-status[data-status="analyzed"] {
+    color: var(--accent-text);
+  }
+  .run-status[data-status="failed"] {
+    color: var(--danger);
+  }
+  .run-result {
+    max-width: 320px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  @media (max-width: 720px) {
+    .formats dl {
+      grid-template-columns: 1fr;
+    }
+    .formats dd {
+      margin-bottom: 6px;
+    }
+  }
+</style>

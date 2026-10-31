@@ -1,0 +1,601 @@
+---
+import Base from "../../../layouts/Base.astro";
+---
+
+<Base title="Import" section="library">
+  <div id="content">
+    <div class="page-head">
+      <div>
+        <a class="crumb" href="/import/">Import und Export</a>
+        <h1 id="run-title">Lade …</h1>
+        <p class="lede" id="run-meta"></p>
+      </div>
+      <div class="actions" id="run-actions"></div>
+    </div>
+
+    <ol class="steps" aria-label="Ablauf">
+      <li data-done><b>1</b>Datei wählen</li>
+      <li id="step-preview"><b>2</b>Vorschau prüfen</li>
+      <li id="step-commit"><b>3</b>Import bestätigen</li>
+    </ol>
+
+    <ul class="notes" id="warnings" hidden></ul>
+
+    <div class="tally" id="tally" role="group" aria-label="Datensätze nach Status filtern"></div>
+
+    <section id="plans-section" hidden aria-labelledby="plans-title">
+      <h2 id="plans-title">Playlists</h2>
+      <div class="panel plans" id="plans"></div>
+    </section>
+
+    <section aria-labelledby="items-title">
+      <h2 id="items-title" class="visually-hidden">Datensätze</h2>
+      <div class="table-wrap">
+        <table class="data import-items">
+          <thead>
+            <tr>
+              <th scope="col" class="right">Zeile</th>
+              <th scope="col">Track</th>
+              <th scope="col">Abgleich</th>
+              <th scope="col" id="decision-head">Aktion</th>
+            </tr>
+          </thead>
+          <tbody id="items"><tr><td colspan="4" class="empty">Lade …</td></tr></tbody>
+        </table>
+      </div>
+      <div class="pager"><span id="items-range"></span><button type="button" class="ghost" id="more" hidden>Weitere laden</button></div>
+    </section>
+  </div>
+</Base>
+
+<script>
+  import { ApiError, formatDuration } from "../../../lib/api";
+  import { platformLabel } from "../../../lib/platforms";
+  import { createSession, requireLogin } from "../../../lib/session";
+  import type {
+    ImportDecision,
+    ImportItem,
+    ImportItemStatus,
+    ImportRun,
+    PlaylistImportMode,
+  } from "../../../lib/types";
+  import {
+    $,
+    confirmDialog,
+    downloadFile,
+    errorMessage,
+    formatBytes,
+    formatDateTime,
+    h,
+    param,
+    plural,
+    toast,
+  } from "../../../lib/ui";
+
+  const { api, tokens } = createSession();
+  const id = param("id") ?? "";
+  let run: ImportRun;
+  let filter: ImportItemStatus | null = null;
+  let items: ImportItem[] = [];
+  let total = 0;
+
+  const STATUS: Record<ImportItemStatus, { label: string; short: string }> = {
+    new: { label: "Neu", short: "neu" },
+    existing: { label: "Bereits vorhanden", short: "vorhanden" },
+    potential_duplicate: { label: "Mögliche Duplikate", short: "mögliches Duplikat" },
+    file_duplicate: { label: "Doppelt in der Datei", short: "doppelt in Datei" },
+    invalid: { label: "Fehlerhaft", short: "fehlerhaft" },
+  };
+  const RESULT = { created: "Neu angelegt", linked: "Mit vorhandenem verknüpft", skipped: "Übersprungen", failed: "Fehlgeschlagen" };
+  const REASON: Record<string, string> = {
+    musichub_id: "MusicHub-ID",
+    source: "Plattform-Link",
+    isrc: "ISRC",
+    metadata: "Titel, Artist und Version",
+    similar: "ähnlich",
+  };
+  const MODE: Record<PlaylistImportMode, string> = {
+    create: "Neue Playlist anlegen",
+    merge: "Fehlende Tracks ergänzen",
+    replace: "Inhalt ersetzen",
+    skip: "Nicht importieren",
+  };
+
+  const editable = () => run.status === "analyzed";
+
+  // --- Kopf, Hinweise, Zähler -------------------------------------------------------
+
+  function renderHead() {
+    document.title = `Import ${run.filename} – MusicHub`;
+    $("#run-title").textContent = run.filename;
+    const parts = [run.format_label ?? "Format unbekannt", formatBytes(run.size_bytes), formatDateTime(run.created_at)];
+    $("#run-meta").textContent = parts.join(", ");
+
+    const preview = $("#step-preview");
+    const commit = $("#step-commit");
+    preview.toggleAttribute("data-done", run.status !== "analyzed");
+    if (run.status === "analyzed") preview.setAttribute("aria-current", "step");
+    else preview.removeAttribute("aria-current");
+    commit.toggleAttribute("data-done", run.status === "committed");
+
+    const actions = $("#run-actions");
+    actions.replaceChildren();
+    if (run.status === "analyzed") {
+      actions.append(
+        h("button", { type: "button", class: "ghost", onclick: discard }, "Verwerfen"),
+        h("button", { type: "button", id: "commit", onclick: commitRun }, "Import bestätigen"),
+      );
+    } else if (run.status !== "failed") {
+      actions.append(
+        h("button", { type: "button", class: "ghost", onclick: () => downloadFile(api, `/api/v1/imports/${run.id}/report?format=csv`) }, "Bericht als CSV"),
+        h("button", { type: "button", class: "ghost", onclick: () => downloadFile(api, `/api/v1/imports/${run.id}/report?format=json`) }, "Bericht als JSON"),
+      );
+    }
+
+    const notes = $("#warnings");
+    const messages = [...run.warnings];
+    if (run.status === "committed") messages.unshift(summaryText());
+    if (run.status === "discarded") messages.unshift("Dieser Import wurde verworfen. Die Bibliothek wurde nicht verändert.");
+    if (run.error) messages.unshift(run.error);
+    notes.hidden = !messages.length;
+    notes.replaceChildren(...messages.map((m, i) => h("li", { class: i === 0 && run.status === "committed" ? "done" : "" }, m)));
+  }
+
+  function summaryText(): string {
+    const s = run.summary;
+    const parts = [
+      plural(s.created ?? 0, "Track neu angelegt", "Tracks neu angelegt"),
+      plural(s.linked ?? 0, "mit vorhandenem verknüpft", "mit vorhandenen verknüpft"),
+    ];
+    if (s.skipped) parts.push(`${s.skipped} übersprungen`);
+    if (s.failed) parts.push(`${s.failed} fehlgeschlagen`);
+    return `Importiert am ${formatDateTime(run.committed_at)}: ${parts.join(", ")}.`;
+  }
+
+  function renderTally() {
+    const box = $("#tally");
+    const s = run.summary as Record<string, number | undefined>;
+    const chip = (status: ImportItemStatus | null, label: string, count: number) =>
+      h(
+        "button",
+        {
+          type: "button",
+          class: "chip tally-chip",
+          "data-status": status ?? "all",
+          "aria-pressed": String(filter === status),
+          onclick: () => {
+            filter = status;
+            renderTally();
+            loadItems(true);
+          },
+        },
+        label,
+        h("span", { class: "count num" }, count.toLocaleString("de-DE")),
+      );
+    box.replaceChildren(
+      chip(null, "Alle", s["total"] ?? 0),
+      ...(Object.keys(STATUS) as ImportItemStatus[])
+        .filter((k) => (s[k] ?? 0) > 0)
+        .map((k) => chip(k, STATUS[k].label, s[k] ?? 0)),
+    );
+  }
+
+  // --- Playlists ----------------------------------------------------------------
+
+  function renderPlans() {
+    const section = $("#plans-section");
+    const box = $("#plans");
+    const rows: HTMLElement[] = [];
+    for (const plan of run.playlists) {
+      const modes: PlaylistImportMode[] = plan.existing_playlist_id ? ["merge", "replace", "create", "skip"] : ["create", "skip"];
+      const select = h(
+        "select",
+        { "aria-label": `Playlist „${plan.name}“`, disabled: !editable() },
+        ...modes.map((m) => h("option", { value: m, selected: m === plan.mode }, MODE[m])),
+      );
+      select.addEventListener("change", () => saveOptions({ playlists: [{ name: plan.name, mode: select.value as PlaylistImportMode }] }));
+      const result = run.summary.playlists?.find((r) => r.name === plan.name);
+      rows.push(
+        h(
+          "div",
+          { class: "plan" },
+          h(
+            "div",
+            { class: "plan-name" },
+            result?.playlist_id ? h("a", { href: `/playlist/?id=${result.playlist_id}` }, plan.name) : h("strong", {}, plan.name),
+            h(
+              "span",
+              { class: "muted" },
+              `${plural(plan.track_count, "Eintrag", "Einträge")}${plan.existing_playlist_id ? ", Playlist gibt es schon" : ""}`,
+            ),
+          ),
+          result ? h("span", { class: "plan-result" }, result.error ?? `${MODE[result.mode]}: ${plural(result.added, "Track", "Tracks")} hinzugefügt`) : select,
+        ),
+      );
+    }
+    const un = run.unassigned;
+    if (un && un.count > 0) {
+      const check = h("input", { type: "checkbox", checked: un.enabled, disabled: !editable(), id: "un-enabled" });
+      const name = h("input", { value: un.name, maxlength: 300, "aria-label": "Name der neuen Playlist", disabled: !editable() || !un.enabled });
+      check.addEventListener("change", () => {
+        name.disabled = !check.checked;
+        saveOptions({ unassigned: { enabled: check.checked } });
+      });
+      name.addEventListener("change", () => name.value.trim() && saveOptions({ unassigned: { name: name.value.trim() } }));
+      const result = run.summary.playlists?.find((r) => r.name === un.name && !run.playlists.some((p) => p.name === r.name));
+      rows.push(
+        h(
+          "div",
+          { class: "plan" },
+          h(
+            "label",
+            { class: "plan-name check", for: "un-enabled" },
+            check,
+            h("span", {}, `${plural(un.count, "Track", "Tracks")} ohne Playlist als neue Playlist anlegen`),
+          ),
+          result?.playlist_id ? h("a", { href: `/playlist/?id=${result.playlist_id}` }, result.name) : name,
+        ),
+      );
+    }
+    section.hidden = rows.length === 0;
+    box.replaceChildren(...rows);
+  }
+
+  async function saveOptions(options: Parameters<typeof api.setImportOptions>[1]) {
+    try {
+      run = await api.setImportOptions(run.id, options);
+      renderPlans();
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    }
+  }
+
+  // --- Datensätze ---------------------------------------------------------------
+
+  function decisionControl(item: ImportItem): HTMLElement {
+    if (!editable()) {
+      return h(
+        "span",
+        { class: `result result-${item.result ?? "none"}` },
+        item.result ? RESULT[item.result] : "–",
+        item.result_track_id ? h("a", { href: `/track/?id=${item.result_track_id}`, class: "small" }, " Track öffnen") : null,
+      );
+    }
+    if (item.status === "invalid") return h("span", { class: "faint" }, "Wird übersprungen");
+    if (item.status === "file_duplicate") return h("span", { class: "faint" }, `Wie Zeile ${item.duplicate_of_row}`);
+    const options: [ImportDecision, string][] = item.match
+      ? [["use_existing", "Vorhandenen verwenden"], ["create", "Als neuen Track anlegen"], ["skip", "Überspringen"]]
+      : [["create", "Neu anlegen"], ["skip", "Überspringen"]];
+    const select = h(
+      "select",
+      { "aria-label": `Aktion für Zeile ${item.row}` },
+      ...options.map(([value, label]) => h("option", { value, selected: value === item.decision }, label)),
+    );
+    select.addEventListener("change", async () => {
+      try {
+        const updated = await api.setImportDecision(run.id, item.id, select.value as ImportDecision);
+        Object.assign(item, updated);
+        toast(`Zeile ${item.row}: ${select.selectedOptions[0]?.textContent ?? ""}.`);
+      } catch (e) {
+        select.value = item.decision;
+        toast(errorMessage(e), "error");
+      }
+    });
+    return select;
+  }
+
+  function itemRow(item: ImportItem) {
+    const track = h(
+      "td",
+      { class: "it-track" },
+      h("span", { class: "it-title" }, item.title ?? "–"),
+      h("span", { class: "it-sub" }, [item.artist, item.version].filter(Boolean).join(" – ") || "–"),
+    );
+    const meta: string[] = [];
+    if (item.duration_ms) meta.push(formatDuration(item.duration_ms));
+    if (item.isrc) meta.push(`ISRC ${item.isrc}`);
+    for (const s of item.sources) meta.push(platformLabel(s.platform));
+    if (item.playlists.length) meta.push(`in ${item.playlists.join(", ")}`);
+    if (meta.length) track.append(h("span", { class: "it-meta" }, meta.join(", ")));
+    for (const e of item.errors) track.append(h("span", { class: "it-error" }, e));
+    for (const w of item.warnings) track.append(h("span", { class: "it-warn" }, w));
+    if (item.result_message) track.append(h("span", { class: "it-warn" }, item.result_message));
+
+    const match = h("td", { class: "it-match" }, h("span", { class: "badge", "data-status": item.status }, STATUS[item.status].short));
+    if (item.match && item.match_reason) {
+      match.append(
+        h("a", { href: `/track/?id=${item.match.id}`, class: "it-link" }, [item.match.title, item.match.version].filter(Boolean).join(" – ")),
+        h(
+          "span",
+          { class: "it-sub" },
+          `${item.match.artist}, über ${REASON[item.match_reason ?? ""] ?? item.match_reason}` +
+            (item.match_reason === "similar" && item.match_score ? ` (${Math.round(item.match_score * 100)} %)` : ""),
+        ),
+      );
+    }
+    return h(
+      "tr",
+      { "data-status": item.status },
+      h("td", { class: "right num faint" }, String(item.row)),
+      track,
+      match,
+      h("td", { class: "it-decision" }, decisionControl(item)),
+    );
+  }
+
+  async function loadItems(reset: boolean) {
+    const body = $("#items");
+    if (reset) items = [];
+    try {
+      const page = await api.importItems(run.id, {
+        ...(filter ? { status: [filter] } : {}),
+        limit: 200,
+        offset: items.length,
+      });
+      items = [...items, ...page.items];
+      total = page.total;
+      body.replaceChildren(
+        ...(items.length ? items.map(itemRow) : [h("tr", {}, h("td", { colspan: 4, class: "empty" }, "Keine Datensätze."))]),
+      );
+      $("#items-range").textContent = total ? `${items.length.toLocaleString("de-DE")} von ${total.toLocaleString("de-DE")}` : "";
+      $("#more").hidden = items.length >= total;
+    } catch (e) {
+      body.replaceChildren(h("tr", {}, h("td", { colspan: 4, class: "empty" }, errorMessage(e))));
+    }
+  }
+  $("#more").addEventListener("click", () => loadItems(false));
+
+  // --- Bestätigen / Verwerfen ----------------------------------------------------
+
+  async function commitRun() {
+    const s = run.summary;
+    const creates = (s.new ?? 0) + (s.potential_duplicate ?? 0);
+    const ok = await confirmDialog({
+      title: "Import bestätigen?",
+      message:
+        `Bis zu ${plural(creates, "Track wird", "Tracks werden")} neu angelegt, ` +
+        `${plural(s.existing ?? 0, "vorhandener Track wird", "vorhandene Tracks werden")} verknüpft` +
+        (s.invalid ? `, ${s.invalid} fehlerhafte übersprungen.` : "."),
+      confirm: "Import bestätigen",
+    });
+    if (!ok) return;
+    const button = document.getElementById("commit") as HTMLButtonElement | null;
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Wird importiert …";
+    }
+    try {
+      run = await api.commitImport(run.id);
+      toast("Import abgeschlossen.");
+      render();
+    } catch (e) {
+      toast(errorMessage(e), "error");
+      if (button) {
+        button.disabled = false;
+        button.textContent = "Import bestätigen";
+      }
+    }
+  }
+
+  async function discard() {
+    const ok = await confirmDialog({
+      title: "Import verwerfen?",
+      message: "Die Bibliothek bleibt unverändert. Der Vorgang bleibt im Protokoll sichtbar.",
+      confirm: "Verwerfen",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      run = await api.discardImport(run.id);
+      render();
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    }
+  }
+
+  function render() {
+    $("#decision-head").textContent = editable() ? "Aktion" : "Ergebnis";
+    renderHead();
+    renderTally();
+    renderPlans();
+    loadItems(true);
+  }
+
+  async function init() {
+    const content = $("#content");
+    if (!requireLogin(tokens, content)) return;
+    try {
+      run = await api.getImport(id);
+      render();
+    } catch (e) {
+      content.replaceChildren(
+        h(
+          "div",
+          { class: "notice" },
+          h("p", {}, e instanceof ApiError && e.status === 404 ? "Diesen Import gibt es nicht." : errorMessage(e)),
+          h("a", { class: "button ghost", href: "/import/" }, "Zu Import und Export"),
+        ),
+      );
+    }
+  }
+  init();
+</script>
+
+<style is:global>
+  ul.notes {
+    list-style: none;
+    margin: 0 0 16px;
+    padding: 12px 16px;
+    border: 1px solid var(--line-strong);
+    border-left: 3px solid var(--warn);
+    border-radius: var(--r-sm);
+    background: var(--surface);
+    font-size: 0.92rem;
+  }
+  ul.notes li + li {
+    margin-top: 6px;
+  }
+  ul.notes li.done {
+    font-weight: 560;
+  }
+  .tally {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 20px;
+  }
+  .tally-chip .count {
+    color: var(--ink);
+    font-weight: 650;
+  }
+  .tally-chip[data-status="invalid"] .count {
+    color: var(--danger);
+  }
+  .tally-chip[data-status="potential_duplicate"] .count {
+    color: var(--warn);
+  }
+  .plans {
+    padding: 0;
+    margin-bottom: 28px;
+  }
+  .plan {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 12px 16px;
+    flex-wrap: wrap;
+  }
+  .plan + .plan {
+    border-top: 1px solid var(--line);
+  }
+  .plan-name {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .plan-name.check {
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+  }
+  .plan-name.check input {
+    width: auto;
+    min-height: 0;
+    accent-color: var(--accent);
+  }
+  .plan select,
+  .plan > input {
+    flex: 0 1 280px;
+  }
+  .plan-result {
+    color: var(--ok);
+    font-size: 0.9rem;
+  }
+  .import-items td {
+    vertical-align: top;
+  }
+  .it-track,
+  .it-match {
+    display: table-cell;
+  }
+  .it-title {
+    display: block;
+    font-weight: 600;
+  }
+  .it-sub,
+  .it-meta {
+    display: block;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+  .it-meta {
+    color: var(--faint);
+  }
+  .it-error,
+  .it-warn {
+    display: block;
+    font-size: 0.84rem;
+    margin-top: 2px;
+  }
+  .it-error {
+    color: var(--danger);
+  }
+  .it-warn {
+    color: var(--warn);
+  }
+  .it-link {
+    display: block;
+    margin-top: 4px;
+    text-decoration: none;
+    font-weight: 560;
+  }
+  .it-link:hover {
+    color: var(--accent-text);
+  }
+  .it-decision select {
+    min-width: 190px;
+  }
+  .badge {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--line-strong);
+    font-size: 0.78rem;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .badge[data-status="new"] {
+    border-color: var(--ok);
+    color: var(--ok);
+  }
+  .badge[data-status="potential_duplicate"] {
+    border-color: var(--warn);
+    color: var(--warn);
+  }
+  .badge[data-status="invalid"] {
+    border-color: var(--danger);
+    color: var(--danger);
+  }
+  .result {
+    font-size: 0.9rem;
+  }
+  .result-created {
+    color: var(--ok);
+  }
+  .result-failed {
+    color: var(--danger);
+  }
+  .result-skipped {
+    color: var(--faint);
+  }
+  .result a {
+    display: block;
+  }
+  @media (max-width: 720px) {
+    .import-items thead {
+      display: none;
+    }
+    .import-items tr {
+      display: grid;
+      grid-template-columns: 34px 1fr;
+      gap: 4px 8px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    table.data.import-items td {
+      border: 0;
+      padding: 0;
+    }
+    .import-items .it-match,
+    .import-items .it-decision {
+      grid-column: 2;
+    }
+    .it-decision select {
+      min-width: 0;
+      width: 100%;
+    }
+  }
+</style>

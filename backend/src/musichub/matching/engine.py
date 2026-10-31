@@ -89,7 +89,9 @@ def normalize_title(title: str) -> str:
     value = _FEAT.sub(" ", value)
     # "Artist - Title" (typisch für YouTube): nur den Titelteil behalten
     if " - " in value:
-        value = value.split(" - ", 1)[1]
+        head, tail = value.split(" - ", 1)
+        # "Titel - Extended Mix" (Spotify) behält den Titel, "Artist - Titel" (YouTube) den Rest
+        value = head if version_markers(tail) or "mix" in tail or "version" in tail else tail
     value = _NON_WORD.sub(" ", value)
     return _SPACES.sub(" ", value).strip()
 

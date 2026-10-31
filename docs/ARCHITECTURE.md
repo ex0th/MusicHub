@@ -43,6 +43,7 @@
 | 1 | Frontend | `frontend/` | UI, ruft nur die REST-API auf | API (HTTP) |
 | 2 | Backend/API | `musichub.api`, `musichub.main` | HTTP, Validierung, Auth, Transaktionen | alle Backend-Pakete |
 | 2a | Bibliothek | `musichub.library` | Fachlogik: Tracks, Quellen, Tags, Playlists, Statistik | `models`, `domain`, `core` |
+| 2b | Import/Export | `musichub.transfer` | Dateiprüfung, Format-Adapter, Abgleich, Importlauf, Export | `library`, `matching`, `models`, `domain` |
 | 3 | Datenbank | `musichub.models`, `musichub.db`, `musichub/migrations` | Schema, Sessions, Migrationen | `domain` |
 | 4 | Connectoren | `musichub.connectors` | Plattform-APIs, liefern neutrale DTOs | `domain`, `core` – **nicht** `db` |
 | 5 | Matching-Engine | `musichub.matching` | Track-Ähnlichkeit bewerten | `domain` |
@@ -90,6 +91,23 @@ als **ein Job pro Plattform** eingestellt, sodass ein Fehlschlag nur diesen Job 
   Positionen bleiben lückenlos `0..n-1`.
 - **Löschen**: Tracks in Playlists nur mit `force`, dann werden betroffene Playlists neu
   durchnummeriert. Tags und Playlists zu löschen lässt Tracks unberührt.
+
+## Import und Export
+
+Details in [IMPORT_EXPORT.md](IMPORT_EXPORT.md). Aufbau von `musichub.transfer`:
+
+```
+Upload ─► decoding (Typ, Größe, Kodierung, Binärinhalt)
+       ─► formats  (ein Adapter je Format ─► ImportRecord/ParseResult)
+       ─► matching (LibraryIndex: ID, Quelle, ISRC, Schlüssel; Ähnlichkeit) ─ rein
+       ─► service.analyze  ─► import_runs/import_items  (Vorschau, Entscheidungen)
+       ─► service.commit   ─► Tracks/Quellen/Tags/Playlists (1 Transaktion, Savepoint je Datensatz)
+export ─► MusicHub-CSV/-JSON (Formula-Injection-Schutz) ─► wieder importierbar
+```
+
+Adapter kennen weder Datenbank noch Bibliothek; sie übersetzen nur Dateien in das neutrale
+`ImportRecord`. Formate, deren Aufbau nicht belegt ist, werden nicht geraten – sie laufen
+über den allgemeinen CSV-/JSON-Adapter mit dokumentierten Spaltennamen.
 
 ## Matching
 

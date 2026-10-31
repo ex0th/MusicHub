@@ -71,6 +71,10 @@ class Settings(BaseSettings):
     soundcloud_client_secret: SecretStr | None = None
     youtube_api_key: SecretStr | None = None
 
+    # --- Import ---------------------------------------------------------------
+    import_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1024, le=200 * 1024 * 1024)
+    import_max_rows: int = Field(default=20_000, ge=1, le=200_000)
+
     # --- Hintergrundjobs -----------------------------------------------------
     worker_poll_interval_seconds: float = 2.0
     worker_max_attempts: int = 5

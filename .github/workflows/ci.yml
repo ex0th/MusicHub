@@ -120,7 +120,13 @@ jobs:
             -d '{"title":"t","artist":"a"}' http://127.0.0.1:8080/api/v1/tracks)" = "201"
           curl -fsS -H 'Authorization: Bearer ci-smoke-token-0123456789' \
             http://127.0.0.1:8080/api/v1/stats | grep -q '"tracks":1'
-          for page in library/ playlists/ playlist/ track/ platforms/ settings/; do
+          # Import über nginx (multipart) analysieren und bestätigen, dann exportieren
+          AUTH='Authorization: Bearer ci-smoke-token-0123456789'
+          RUN=$(curl -fsS -H "$AUTH" -F "file=@examples/import/tunemymusic.csv" \
+            http://127.0.0.1:8080/api/v1/imports | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+          curl -fsS -X POST -H "$AUTH" "http://127.0.0.1:8080/api/v1/imports/$RUN/commit" | grep -q '"status":"committed"'
+          curl -fsS -H "$AUTH" "http://127.0.0.1:8080/api/v1/export/library?format=csv" | grep -q "Teardrop"
+          for page in library/ playlists/ playlist/ track/ platforms/ settings/ import/ import/run/; do
             curl -fsS -o /dev/null "http://127.0.0.1:8080/$page"
           done
           docker compose ps

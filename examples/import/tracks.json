@@ -1,0 +1,16 @@
+{
+  "playlists": [
+    {
+      "name": "Warehouse",
+      "description": "Dunkel, schnell, lang.",
+      "tracks": [
+        { "title": "Spastik", "artist": "Plastikman", "version": "Dubfire Remix", "duration": "8:32" },
+        { "title": "Shades of Grey", "artist": "Vril", "youtube_url": "https://youtu.be/AAAAAAAAAAA" },
+        { "title": "Windowlicker", "artist": "Aphex Twin", "isrc": "GB-BPW-99-00001" }
+      ]
+    }
+  ],
+  "tracks": [
+    { "title": "Bonfire", "artist": "Sascha Funke", "version": "Live", "duration_ms": 402000, "tags": ["Stimmung:Abend"] }
+  ]
+}

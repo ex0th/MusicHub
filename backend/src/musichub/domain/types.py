@@ -49,6 +49,47 @@ class JobStatus(StrEnum):
     DEAD = "dead"  # max_attempts erreicht, kein weiterer Versuch
 
 
+class ImportStatus(StrEnum):
+    #: Datei gelesen und abgeglichen, wartet auf Bestätigung
+    ANALYZED = "analyzed"
+    COMMITTED = "committed"
+    DISCARDED = "discarded"
+    #: Datei abgelehnt (Typ, Größe, Inhalt) – nur zur Protokollierung
+    FAILED = "failed"
+
+
+class ImportItemStatus(StrEnum):
+    NEW = "new"
+    EXISTING = "existing"
+    POTENTIAL_DUPLICATE = "potential_duplicate"
+    #: derselbe Track kommt in der Datei schon früher vor
+    FILE_DUPLICATE = "file_duplicate"
+    INVALID = "invalid"
+
+
+class ImportDecision(StrEnum):
+    CREATE = "create"
+    USE_EXISTING = "use_existing"
+    SKIP = "skip"
+
+
+class ImportResult(StrEnum):
+    CREATED = "created"
+    LINKED = "linked"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+
+
+class PlaylistImportMode(StrEnum):
+    #: neue Playlist anlegen
+    CREATE = "create"
+    #: in vorhandene Playlist gleichen Namens einfügen, was noch fehlt
+    MERGE = "merge"
+    #: Inhalt der vorhandenen Playlist durch die Datei ersetzen
+    REPLACE = "replace"
+    SKIP = "skip"
+
+
 def sql_in(enum: type[StrEnum]) -> str:
     """Hilfsfunktion für CHECK-Constraints: "'a', 'b', 'c'"."""
     return ", ".join(f"'{m.value}'" for m in enum)

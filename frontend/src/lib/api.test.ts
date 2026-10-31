@@ -59,6 +59,25 @@ describe("ApiClient", () => {
     expect(fetch.mock.calls[0]?.[0]).toBe("/api/v1/tracks?q=a%26b&limit=10");
   });
 
+  it("sendet Dateien als multipart ohne JSON-Content-Type", async () => {
+    const fetch = fetchMock(async () => jsonResponse(201, { id: "r1" }));
+    await new ApiClient({ fetch }).uploadImport(new File(["title,artist\nA,B"], "x.csv"), "generic_csv");
+    const init = fetch.mock.calls[0]?.[1];
+    expect(new Headers(init?.headers).get("Content-Type")).toBeNull();
+    expect(init?.body).toBeInstanceOf(FormData);
+    expect((init?.body as FormData).get("format")).toBe("generic_csv");
+  });
+
+  it("liest den Dateinamen beim Download aus Content-Disposition", async () => {
+    const api = new ApiClient({
+      fetch: async (): Promise<Response> =>
+        new Response("a,b", { headers: { "Content-Disposition": 'attachment; filename="export.csv"' } }),
+    });
+    const { filename, blob } = await api.download("/api/v1/export/library?format=csv");
+    expect(filename).toBe("export.csv");
+    expect(await blob.text()).toBe("a,b");
+  });
+
   it("gibt bei 204 undefined zurück", async () => {
     const api = new ApiClient({ fetch: async (): Promise<Response> => new Response(null, { status: 204 }) });
     await expect(api.deleteTrack("x")).resolves.toBeUndefined();

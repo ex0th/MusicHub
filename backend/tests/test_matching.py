@@ -19,6 +19,7 @@ def test_normalize_title_strips_noise_and_features() -> None:
     assert normalize_title("Blinding Lights (Official Video) [HD]") == "blinding lights"
     assert normalize_title("Señorita feat. Camila Cabello") == "senorita"
     assert normalize_title("The Weeknd - Blinding Lights") == "blinding lights"
+    assert normalize_title("Innerbloom - Extended Mix") == "innerbloom"
 
 
 def test_normalize_artists_splits_collaborations() -> None:

@@ -8,7 +8,7 @@ die führende Instanz**: Ein Track existiert auch dann, wenn er auf keiner oder 
 Plattform verfügbar ist. Fällt eine Plattform aus, laufen Sammlung und alle anderen
 Plattformen ungestört weiter.
 
-> **Stand: Etappe 2 – Musikbibliothek.** Tracks, Plattform-Quellen, Tags und Playlists lassen
+> **Stand: Etappe 2a – Musikbibliothek mit Import und Export.** Tracks, Plattform-Quellen, Tags und Playlists lassen
 > sich vollständig in der Weboberfläche und per REST-API verwalten – ganz ohne Plattform-Konten.
 > Links zu Spotify, SoundCloud und YouTube werden beim Einfügen erkannt. Die automatische
 > Anbindung der Plattform-APIs folgt in den nächsten Etappen, siehe [docs/ROADMAP.md](docs/ROADMAP.md).
@@ -24,6 +24,10 @@ Plattformen ungestört weiter.
   verfügbar markieren, Tags, Playlist-Zugehörigkeit
 - **Playlists:** anlegen, umbenennen, Tracks suchen und hinzufügen, per Drag & Drop oder
   Pfeiltasten umsortieren, entfernen
+- **Import und Export:** Assistent für TuneMyMusic-, Soundiiz-, Exportify- und eigene
+  CSV-Dateien, JSON und Textlisten mit Vorschau, Duplikaterkennung und Importbericht; Export
+  der Bibliothek oder einzelner Playlists als CSV/JSON, wieder importierbar ohne Duplikate
+  ([Details](docs/IMPORT_EXPORT.md))
 - **Plattformen und Einstellungen:** Zahlen je Plattform, Anmeldung, helles/dunkles Schema,
   Tag-Verwaltung
 
@@ -99,7 +103,8 @@ Für reproduzierbare Stände `MUSICHUB_VERSION=v0.1.0` in `.env` setzen statt `l
 
 ### Backup
 
-Alle Daten liegen im Volume `postgres-data`:
+Inhaltlich: *Musikbibliothek → Import und Export → Als JSON exportieren* (wieder importierbar).
+Vollständig (inkl. Protokolle): alle Daten liegen im Volume `postgres-data`:
 
 ```bash
 docker compose exec db pg_dump -U musichub -Fc musichub > musichub-$(date +%F).dump
@@ -187,5 +192,6 @@ in einer späteren Etappe, die API ist dafür bereits fertig.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) – Komponenten, Abhängigkeiten, Fehlerisolation
 - [docs/DATABASE.md](docs/DATABASE.md) – Schema, Konventionen, Migrationen
 - [docs/API.md](docs/API.md) – Endpunkte, Auth, Fehlerformat
+- [docs/IMPORT_EXPORT.md](docs/IMPORT_EXPORT.md) – Importformate, Spalten, Ablauf, Export
 - [docs/ROADMAP.md](docs/ROADMAP.md) – Etappen und offene Punkte
 - [CLAUDE.md](CLAUDE.md) – Projektkontext und Regeln für Claude Code

@@ -51,6 +51,11 @@ class UnprocessableError(AppError):
     code = "unprocessable"
 
 
+class PayloadTooLargeError(AppError):
+    status_code = 413
+    code = "payload_too_large"
+
+
 class UnauthorizedError(AppError):
     status_code = 401
     code = "unauthorized"

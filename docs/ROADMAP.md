@@ -15,7 +15,7 @@ Etappen bauen aufeinander auf. Jede Etappe endet mit grüner CI und einem lauff�
 - Track-CRUD in API und Frontend
 - Docker Compose (Dev mit Hot Reload, Betrieb für Arcane), CI mit Smoke-Test und GHCR
 
-## ✅ Etappe 2 – Zentrale Musikbibliothek (dieser Stand)
+## ✅ Etappe 2 – Zentrale Musikbibliothek
 
 - Datenmodell: Tracks mit Version/Remix und Veröffentlichungsdatum, `track_sources` mit
   getrenntem Verknüpfungsstatus und Verfügbarkeit, Tags mit Kategorien, lückenlose
@@ -28,10 +28,21 @@ Etappen bauen aufeinander auf. Jede Etappe endet mit grüner CI und einem lauff�
   Plattformen, Einstellungen (Anmeldung, Farbschema, Tags); dunkel als Standard
 - Vollständig ohne externe APIs nutzbar
 
+## ✅ Etappe 2a – Import und Export (dieser Stand)
+
+- Import-Assistent: hochladen, Format erkennen, Vorschau, Abgleich, Entscheidungen, bestätigen
+- Adapter: TuneMyMusic-, Soundiiz-, Exportify- und allgemeines CSV, JSON, TXT-Tracklisten,
+  MusicHub-CSV/-JSON; UTF-8/UTF-16/Windows-1252, Trennzeichen `,` `;` Tab `|`
+- Erkennung vorhandener Tracks über MusicHub-ID, Plattform-Link, ISRC, Titel+Artist+Version
+  und Ähnlichkeit; wiederholte Imports erzeugen keine Duplikate
+- Importprotokoll (`import_runs`, `import_items`), Bericht als CSV/JSON
+- Export der Bibliothek und einzelner Playlists als CSV/JSON, gegen Formula-Injection gesichert
+
 ## Etappe 2b – Bibliothek ausbauen
 
 - Eigene `artists`-Tabelle (n:m zu Tracks) statt Anzeige-String
-- Import aus CSV/JSON mit Duplikaterkennung über die Matching-Engine (`import_runs`)
+- Import großer Dateien als Hintergrundjob mit Fortschrittsanzeige
+- Weitere Formate mit belegtem Aufbau (z. B. M3U/XSPF), echte Soundiiz-Exportdatei prüfen
 - Mehrfachauswahl in der Bibliothek (Tags setzen, zu Playlist hinzufügen, löschen)
 - Fehlertolerante Suche (`pg_trgm`) für große Sammlungen
 - Paginierte Einträge für sehr große Playlists (> 2 000 Tracks)
@@ -81,4 +92,7 @@ Etappen bauen aufeinander auf. Jede Etappe endet mit grüner CI und einem lauff�
 - Playlist-Detail lädt alle Einträge auf einmal.
 - Circuit-Breaker-Zustand ist pro Prozess (API und Worker getrennt), nicht geteilt.
 - Keine Rate-Limits an der eigenen API (hinter Reverse Proxy ergänzen).
-- Kein automatisiertes Backup.
+- Kein automatisiertes Backup (der JSON-Export eignet sich als manuelles Backup der Bibliothek).
+- Import läuft synchron in der Anfrage (bis 20 000 Datensätze); Soundiiz-Exportlayout nur
+  aus der Soundiiz-Hilfe abgeleitet, TuneMyMusic aus Drittquellen (siehe IMPORT_EXPORT.md).
+- SoundCloud-IDs aus Fremdexporten (numerisch) werden noch nicht übernommen.

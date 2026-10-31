@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -19,7 +19,17 @@ from pydantic import (
 
 from musichub.connectors.base import Capability
 from musichub.connectors.registry import ConnectorState
-from musichub.domain.types import Availability, LinkStatus, MatchMethod, Platform
+from musichub.domain.types import (
+    Availability,
+    ImportDecision,
+    ImportItemStatus,
+    ImportResult,
+    ImportStatus,
+    LinkStatus,
+    MatchMethod,
+    Platform,
+    PlaylistImportMode,
+)
 
 NonEmpty = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
 #: ISRC wird vor der Prüfung bereinigt ("us-um7-19-00001" -> "USUM71900001").
@@ -360,6 +370,115 @@ class LibraryStats(ApiModel):
     #: Tracks, die auf genau einer Plattform verfügbar sind
     single_platform: int
     platforms: list[PlatformStats]
+
+
+# --- Import ----------------------------------------------------------------------
+
+
+class ImportFormatOut(ApiModel):
+    id: str
+    label: str
+    kind: str
+
+
+class ImportFormatsOut(ApiModel):
+    formats: list[ImportFormatOut]
+    max_bytes: int
+    max_rows: int
+    extensions: list[str]
+
+
+class ImportPlaylistPlan(ApiModel):
+    name: str
+    description: str | None
+    track_count: int
+    existing_playlist_id: uuid.UUID | None
+    mode: PlaylistImportMode
+
+
+class ImportUnassigned(ApiModel):
+    count: int
+    enabled: bool
+    name: str
+
+
+class ImportRunOut(ApiModel):
+    id: uuid.UUID
+    filename: str
+    size_bytes: int
+    format: str | None
+    format_label: str | None
+    status: ImportStatus
+    created_by: str
+    created_at: datetime
+    committed_at: datetime | None
+    warnings: list[str]
+    error: str | None
+    #: Zähler je Status; nach dem Commit zusätzlich created/linked/skipped/failed/playlists
+    summary: dict[str, Any]
+    playlists: list[ImportPlaylistPlan]
+    unassigned: ImportUnassigned | None
+
+
+class ImportSourceOut(ApiModel):
+    platform: Platform
+    external_id: str
+    url: str
+
+
+class ImportTrackRef(ApiModel):
+    id: uuid.UUID
+    title: str
+    artist: str
+    version: str | None
+
+
+class ImportItemOut(ApiModel):
+    id: uuid.UUID
+    row: int
+    status: ImportItemStatus
+    decision: ImportDecision
+    title: str | None
+    artist: str | None
+    version: str | None
+    album: str | None
+    duration_ms: int | None
+    isrc: str | None
+    sources: list[ImportSourceOut]
+    playlists: list[str]
+    errors: list[str]
+    warnings: list[str]
+    match: ImportTrackRef | None
+    match_reason: str | None
+    match_score: float | None
+    duplicate_of_row: int | None
+    result: ImportResult | None
+    result_track_id: uuid.UUID | None
+    result_message: str | None
+
+
+class ImportDecisionUpdate(InputModel):
+    decision: ImportDecision
+    #: anderer vorhandener Track als der vorgeschlagene (nur bei use_existing)
+    match_track_id: uuid.UUID | None = None
+
+
+class ImportPlaylistMode(InputModel):
+    name: Annotated[str, StringConstraints(min_length=1, max_length=300)]
+    mode: PlaylistImportMode
+
+
+class ImportUnassignedUpdate(InputModel):
+    enabled: bool | None = None
+    name: (
+        Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=300)]
+        | None
+    ) = None
+
+
+class ImportOptionsUpdate(InputModel):
+    playlists: Annotated[list[ImportPlaylistMode], Field(max_length=1000)] = []
+    unassigned: ImportUnassignedUpdate | None = None
 
 
 # --- Connectoren ---------------------------------------------------------------

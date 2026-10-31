@@ -191,3 +191,96 @@ export interface Problem {
   errors?: { loc: (string | number)[]; msg: string; type: string }[];
   [extra: string]: unknown;
 }
+
+// --- Import / Export ---------------------------------------------------------------
+
+export type ImportStatus = "analyzed" | "committed" | "discarded" | "failed";
+export type ImportItemStatus = "new" | "existing" | "potential_duplicate" | "file_duplicate" | "invalid";
+export type ImportDecision = "create" | "use_existing" | "skip";
+export type ImportResult = "created" | "linked" | "skipped" | "failed";
+export type PlaylistImportMode = "create" | "merge" | "replace" | "skip";
+
+export interface ImportFormat {
+  id: string;
+  label: string;
+  kind: "csv" | "json" | "txt";
+}
+
+export interface ImportFormats {
+  formats: ImportFormat[];
+  max_bytes: number;
+  max_rows: number;
+  extensions: string[];
+}
+
+export interface ImportPlaylistPlan {
+  name: string;
+  description: string | null;
+  track_count: number;
+  existing_playlist_id: string | null;
+  mode: PlaylistImportMode;
+}
+
+export interface ImportPlaylistResult {
+  name: string;
+  mode: PlaylistImportMode;
+  added: number;
+  playlist_id: string | null;
+  error?: string;
+}
+
+export interface ImportSummary {
+  new?: number;
+  existing?: number;
+  potential_duplicate?: number;
+  file_duplicate?: number;
+  invalid?: number;
+  total?: number;
+  created?: number;
+  linked?: number;
+  skipped?: number;
+  failed?: number;
+  tags_created?: number;
+  playlists?: ImportPlaylistResult[];
+}
+
+export interface ImportRun {
+  id: string;
+  filename: string;
+  size_bytes: number;
+  format: string | null;
+  format_label: string | null;
+  status: ImportStatus;
+  created_by: string;
+  created_at: string;
+  committed_at: string | null;
+  warnings: string[];
+  error: string | null;
+  summary: ImportSummary;
+  playlists: ImportPlaylistPlan[];
+  unassigned: { count: number; enabled: boolean; name: string } | null;
+}
+
+export interface ImportItem {
+  id: string;
+  row: number;
+  status: ImportItemStatus;
+  decision: ImportDecision;
+  title: string | null;
+  artist: string | null;
+  version: string | null;
+  album: string | null;
+  duration_ms: number | null;
+  isrc: string | null;
+  sources: { platform: Platform; external_id: string; url: string }[];
+  playlists: string[];
+  errors: string[];
+  warnings: string[];
+  match: { id: string; title: string; artist: string; version: string | null } | null;
+  match_reason: string | null;
+  match_score: number | null;
+  duplicate_of_row: number | null;
+  result: ImportResult | null;
+  result_track_id: string | null;
+  result_message: string | null;
+}

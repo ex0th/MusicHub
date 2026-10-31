@@ -15,7 +15,7 @@ PostgreSQL 17, Zugriff über SQLAlchemy 2 (synchron, psycopg 3), Migrationen mit
   (Links eines Tracks, Einträge einer Playlist). Ein Track in einer Playlist ist mit
   `RESTRICT` geschützt.
 
-## Schema (Revision `0002`)
+## Schema (Revision `0003`)
 
 ```
                 tags
@@ -31,6 +31,7 @@ tracks 1───n track_sources
 playlist_items n───1 playlists 1───n playlist_targets
 
 jobs (eigenständig)
+import_runs 1───n import_items ──(SET NULL)──> tracks
 ```
 
 ### `tracks` – die lokale Sammlung
@@ -110,6 +111,22 @@ Eine lokale Playlist hat pro Plattform höchstens ein Ziel (`uq (playlist_id, pl
 `attempts`/`max_attempts`, `run_after`, `locked_at`/`locked_by`, `last_error`, `finished_at`.
 Index `(status, run_after)` für das Abholen.
 
+### `import_runs`, `import_items` – Importprotokoll
+
+Jeder Upload erzeugt einen `import_runs`-Eintrag – auch abgelehnte Dateien (`status = failed`,
+`error`). Gespeichert werden Dateiname, Größe, SHA-256 (indiziert, erkennt wiederholte
+Uploads), erkanntes `format`, `status` (`analyzed` | `committed` | `discarded` | `failed`),
+`created_by` (Subjekt des Nutzers), `options` (Playlist-Entscheidungen, jsonb), `summary`
+(Zähler, jsonb), `warnings`, `committed_at`. Die Datei selbst wird nicht gespeichert.
+
+`import_items` hält je Datensatz: `seq` (Reihenfolge, eindeutig je Lauf), `row`
+(Zeilennummer), `status` (`new` | `existing` | `potential_duplicate` | `file_duplicate` |
+`invalid`), `decision` (`create` | `use_existing` | `skip`), Abgleich (`match_track_id`,
+`match_reason`, `match_score`, `duplicate_of_seq`), den normalisierten Datensatz `data`
+(jsonb, inkl. Fehler und Hinweise), `playlists` und nach dem Commit `result`
+(`created` | `linked` | `skipped` | `failed`), `result_track_id`, `result_message`.
+Verweise auf Tracks sind `ON DELETE SET NULL` – das Protokoll bleibt, wenn Tracks gelöscht werden.
+
 ## Geplante Tabellen
 
 Werden erst angelegt, wenn die zugehörige Funktion gebaut wird (siehe ROADMAP):
@@ -117,7 +134,6 @@ Werden erst angelegt, wenn die zugehörige Funktion gebaut wird (siehe ROADMAP):
 | Tabelle | Zweck | Wichtigste Spalten |
 |---|---|---|
 | `connector_accounts` | verbundenes Plattform-Konto je Nutzer | `platform`, `owner_subject`, `display_name`, verschlüsselte `access_token`/`refresh_token`, `expires_at`, `scopes`, `status` |
-| `import_runs` | ein Importvorgang (CSV/JSON, Plattform-Playlist) | `source` (Datei/Plattform), `status`, `started_at`, `finished_at`, `stats` (jsonb: neu/zugeordnet/übersprungen), `error`; Einzelergebnisse als `import_items` (`raw` jsonb, `track_id`, `outcome`) |
 | `sync_runs` | Historie je Synchronisation einer Playlist | `playlist_target_id`, `job_id`, `started_at`, `finished_at`, `status`, `added`, `removed`, `unresolved`, `error` |
 
 Tokens in `connector_accounts` werden mit einem Schlüssel aus der Umgebung verschlüsselt

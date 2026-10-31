@@ -29,6 +29,12 @@ Instanz**, Playlists werden von dort nach Spotify, SoundCloud und YouTube synchr
    (bestätigt + nicht unverfügbar) – nicht an anderer Stelle nachbauen.
 10. **Playlist-Positionen nur über `library/playlists.py` ändern** (Sperre, lückenlose
     Nummerierung). Nie `position` direkt setzen.
+11. **Keine Dateiformate erfinden.** Neue Import-Adapter nur mit belegter Quelle für den
+    Aufbau; Quelle in `docs/IMPORT_EXPORT.md` nennen, Beispieldatei in `examples/import/`
+    und Test ergänzen. Adapter lesen nur Text → `ImportRecord`, kein DB-Zugriff.
+12. **CSV-Ausgaben immer über `transfer/export.py::to_csv`** (Formula-Injection-Schutz).
+13. **Import schreibt nur im Commit** – Analyse und Vorschau ändern die Bibliothek nie;
+    vorhandene Tracks werden nur ergänzt, nie überschrieben (lokal führt).
 
 ## Struktur
 
@@ -43,9 +49,11 @@ backend/
                        platform_urls.py (Links erkennen/erzeugen, ohne Netzwerk)
     db/                Engine/Session, Basis-Modell, Migrations-Status, migrate (Advisory-Lock)
     models/            SQLAlchemy-Modelle (library.py, job.py) – in models/__init__ exportieren
-    migrations/        Alembic (env.py, versions/0001_…, 0002_bibliothek)
+    migrations/        Alembic (env.py, versions/0001_…, 0002_bibliothek, 0003_importprotokoll)
     api/               schemas.py (Pydantic), routes/ (health, system, tracks, playlists, tags)
     library/           Fachlogik: tracks, sources, tags, playlists, stats, queries
+    transfer/          Import/Export: decoding, records, formats/ (Adapter), matching,
+                       service (Analyse, Commit, Bericht), export
     connectors/        base.py (Schnittstelle, DTOs, Fehler), platforms.py, registry.py
     matching/engine.py Score-Berechnung
     sync/engine.py     plan_playlist_sync
@@ -55,7 +63,7 @@ frontend/
   src/lib/             api.ts (Client), types.ts, auth.ts, session.ts, ui.ts (h(), Toast,
                        Dialog, Abdeckungsstreifen), platforms.ts, forms.ts
   src/pages/           index (Dashboard), library/, track/?id=, playlists/, playlist/?id=,
-                       platforms/, settings/
+                       platforms/, settings/, import/, import/run/?id=
   src/layouts/         Base.astro (Navigation)
   src/components/      TrackForm.astro
   src/styles/          global.css (Tokens, Komponenten-Styles)
@@ -64,7 +72,8 @@ frontend/
 compose.yaml           Betrieb/Arcane (GHCR-Images)
 compose.dev.yaml       Entwicklung (Build, Hot Reload)
 .github/workflows/ci.yml
-docs/                  ARCHITECTURE, DATABASE, API, ROADMAP
+docs/                  ARCHITECTURE, DATABASE, API, ROADMAP, IMPORT_EXPORT
+examples/import/       Beispieldateien je Importformat (auch Testdaten)
 ```
 
 ## Befehle

@@ -162,3 +162,28 @@ export function coverageStrip(track: Pick<Track, "sources">, interactive = true)
 export function param(name: string): string | null {
   return new URLSearchParams(window.location.search).get(name);
 }
+
+// --- Downloads -------------------------------------------------------------------
+
+/** Lädt eine geschützte Datei (Export, Bericht) und bietet sie zum Speichern an. */
+export async function downloadFile(
+  api: { download(path: string): Promise<{ blob: Blob; filename: string }> },
+  path: string,
+): Promise<void> {
+  try {
+    const { blob, filename } = await api.download(path);
+    const url = URL.createObjectURL(blob);
+    const link = h("a", { href: url, download: filename, hidden: true });
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  } catch (e) {
+    toast(errorMessage(e), "error");
+  }
+}
+
+export function formatBytes(n: number): string {
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toLocaleString("de-DE", { maximumFractionDigits: 1 })} MB`;
+  return `${Math.max(1, Math.round(n / 1024)).toLocaleString("de-DE")} KB`;
+}

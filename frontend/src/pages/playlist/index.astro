@@ -12,6 +12,8 @@ import Base from "../../layouts/Base.astro";
         <p class="pl-meta muted" id="pl-meta"></p>
       </div>
       <div class="actions">
+        <button type="button" class="ghost" data-export="csv">Export CSV</button>
+        <button type="button" class="ghost" data-export="json">Export JSON</button>
         <button type="button" class="ghost" id="edit">Bearbeiten</button>
         <button type="button" class="danger" id="delete">Löschen</button>
       </div>
@@ -52,7 +54,17 @@ import Base from "../../layouts/Base.astro";
   import { ApiError, formatDuration, formatTotalDuration } from "../../lib/api";
   import { createSession, requireLogin } from "../../lib/session";
   import type { PlaylistDetail, PlaylistItem, Track } from "../../lib/types";
-  import { $, confirmDialog, coverageStrip, errorMessage, h, param, plural, toast } from "../../lib/ui";
+  import {
+    $,
+    confirmDialog,
+    coverageStrip,
+    downloadFile,
+    errorMessage,
+    h,
+    param,
+    plural,
+    toast,
+  } from "../../lib/ui";
 
   const { api, tokens } = createSession();
   const id = param("id") ?? "";
@@ -289,6 +301,12 @@ import Base from "../../layouts/Base.astro";
       toast(errorMessage(e), "error");
     }
   });
+
+  for (const btn of document.querySelectorAll<HTMLButtonElement>("[data-export]")) {
+    btn.addEventListener("click", () =>
+      downloadFile(api, `/api/v1/playlists/${playlist.id}/export?format=${btn.dataset["export"]}`),
+    );
+  }
 
   // --- Start ----------------------------------------------------------------------
 

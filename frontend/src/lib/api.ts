@@ -4,6 +4,12 @@
 import type { TokenProvider } from "./auth";
 import type {
   Availability,
+  ImportDecision,
+  ImportFormats,
+  ImportItem,
+  ImportItemStatus,
+  ImportRun,
+  PlaylistImportMode,
   ConnectorStatus,
   LibraryStats,
   LinkStatus,
@@ -62,7 +68,7 @@ export class ApiClient {
     const { auth = true, ...rest } = init;
     const headers = new Headers(rest.headers);
     headers.set("Accept", "application/json");
-    if (rest.body !== undefined && !headers.has("Content-Type")) {
+    if (rest.body !== undefined && !(rest.body instanceof FormData) && !headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json");
     }
     const token = auth ? this.tokens?.getToken() : null;
@@ -249,6 +255,83 @@ export class ApiClient {
       method: "PUT",
       body: JSON.stringify({ item_ids: itemIds }),
     });
+  }
+
+  // --- Import ----------------------------------------------------------------
+
+  importFormats(): Promise<ImportFormats> {
+    return this.request("/api/v1/imports/formats");
+  }
+
+  uploadImport(file: File, format?: string): Promise<ImportRun> {
+    const body = new FormData();
+    body.append("file", file, file.name);
+    if (format) body.append("format", format);
+    return this.request("/api/v1/imports", { method: "POST", body });
+  }
+
+  listImports(limit = 20, offset = 0): Promise<Page<ImportRun>> {
+    return this.request(`/api/v1/imports?limit=${limit}&offset=${offset}`);
+  }
+
+  getImport(id: string): Promise<ImportRun> {
+    return this.request(`/api/v1/imports/${enc(id)}`);
+  }
+
+  importItems(
+    id: string,
+    params: { status?: ImportItemStatus[]; limit?: number; offset?: number } = {},
+  ): Promise<Page<ImportItem>> {
+    const query = new URLSearchParams();
+    for (const s of params.status ?? []) query.append("status", s);
+    query.set("limit", String(params.limit ?? 200));
+    query.set("offset", String(params.offset ?? 0));
+    return this.request(`/api/v1/imports/${enc(id)}/items?${query.toString()}`);
+  }
+
+  setImportDecision(id: string, itemId: string, decision: ImportDecision): Promise<ImportItem> {
+    return this.request(`/api/v1/imports/${enc(id)}/items/${enc(itemId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ decision }),
+    });
+  }
+
+  setImportOptions(
+    id: string,
+    options: {
+      playlists?: { name: string; mode: PlaylistImportMode }[];
+      unassigned?: { enabled?: boolean; name?: string };
+    },
+  ): Promise<ImportRun> {
+    return this.request(`/api/v1/imports/${enc(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(options),
+    });
+  }
+
+  commitImport(id: string): Promise<ImportRun> {
+    return this.request(`/api/v1/imports/${enc(id)}/commit`, { method: "POST" });
+  }
+
+  discardImport(id: string): Promise<ImportRun> {
+    return this.request(`/api/v1/imports/${enc(id)}/discard`, { method: "POST" });
+  }
+
+  // --- Downloads (Export, Bericht) --------------------------------------------
+
+  /** Lädt eine Datei mit Token und liefert Inhalt und Dateinamen aus Content-Disposition. */
+  async download(path: string): Promise<{ blob: Blob; filename: string }> {
+    const headers = new Headers();
+    const token = this.tokens?.getToken();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    const response = await this.fetchImpl(`${this.baseUrl}${path}`, { headers });
+    if (!response.ok) {
+      const isJson = (response.headers.get("Content-Type") ?? "").includes("json");
+      throw new ApiError(response.status, isJson ? ((await response.json()) as Problem) : null);
+    }
+    const disposition = response.headers.get("Content-Disposition") ?? "";
+    const match = /filename="([^"]+)"/.exec(disposition);
+    return { blob: await response.blob(), filename: match?.[1] ?? "download" };
   }
 }
 

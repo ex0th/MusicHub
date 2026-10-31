@@ -44,6 +44,7 @@ Token je nach `MUSICHUB_AUTH_MODE`: Entwicklungs-Token (`dev`) oder OIDC-Access-
 Content-Type `application/problem+json`. Bei `422` zusätzlich `errors: [{loc, msg, type}]`.
 `code`-Werte: `unauthorized`, `forbidden`, `not_found`, `conflict`, `validation_error`,
 `unprocessable` (fachlich ungültig, z. B. unbekannte Tag-IDs, mit Zusatzfeldern),
+`payload_too_large` (Upload über der Größengrenze),
 `service_unavailable`, `internal_error` (u. a.). Bei `500` enthält `detail` bewusst keine
 internen Informationen – über `request_id` findet man den Eintrag im Server-Log.
 
@@ -166,6 +167,33 @@ Track-ID – derselbe Track darf mehrfach in einer Playlist stehen.
 
 `tracks` je Plattform = Tracks mit verfügbarer bestätigter Quelle, `exclusive` = davon nur
 dort verfügbar, `unavailable` = bestätigte Quellen mit `availability = unavailable`.
+
+### Import
+
+Ablauf, Formate und Regeln: [IMPORT_EXPORT.md](IMPORT_EXPORT.md).
+
+| Methode | Pfad | Beschreibung |
+|---|---|---|
+| GET | `/api/v1/imports/formats` | Formate, Dateiendungen, Größen- und Zeilengrenze |
+| POST | `/api/v1/imports` | `multipart/form-data` mit `file` und optional `format` → `201` Importlauf mit Analyse; Bibliothek bleibt unverändert. Abgelehnte Dateien: `422` bzw. `413` mit `import_id` (protokolliert) |
+| GET | `/api/v1/imports?limit=&offset=` | Importprotokoll, neueste zuerst |
+| GET | `/api/v1/imports/{id}` | Importlauf: `status`, `format`, `summary`, `warnings`, `playlists`, `unassigned` |
+| GET | `/api/v1/imports/{id}/items?status=&limit=&offset=` | Datensätze mit Status, Abgleich (`match`, `match_reason`, `match_score`), Fehlern, Hinweisen, Ergebnis |
+| PATCH | `/api/v1/imports/{id}/items/{item_id}` | `{"decision": "create" \| "use_existing" \| "skip", "match_track_id"?}` |
+| PATCH | `/api/v1/imports/{id}` | `{"playlists": [{"name", "mode"}], "unassigned": {"enabled", "name"}}` |
+| POST | `/api/v1/imports/{id}/commit` | bestätigen; danach `summary` mit `created`, `linked`, `skipped`, `failed`, `playlists`. Zweites Mal → `409` |
+| POST | `/api/v1/imports/{id}/discard` | verwerfen |
+| GET | `/api/v1/imports/{id}/report?format=csv\|json` | Importbericht als Download |
+
+`summary` nach der Analyse: Anzahl je Status (`new`, `existing`, `potential_duplicate`,
+`file_duplicate`, `invalid`, `total`). Playlist-`mode`: `create`, `merge`, `replace`, `skip`.
+
+### Export
+
+| Methode | Pfad | Beschreibung |
+|---|---|---|
+| GET | `/api/v1/export/library?format=csv\|json` | gesamte Bibliothek (Download) |
+| GET | `/api/v1/playlists/{id}/export?format=csv\|json` | eine Playlist (Download) |
 
 ## Neue Endpunkte – Checkliste
 
