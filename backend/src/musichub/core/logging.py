@@ -17,7 +17,11 @@ from musichub.core.config import LogFormat
 #: Korrelations-ID (Request-ID oder Job-ID), wird per Middleware/Worker gesetzt.
 correlation_id: ContextVar[str | None] = ContextVar("correlation_id", default=None)
 
-_RESERVED = set(logging.LogRecord("", 0, "", 0, "", (), None).__dict__) | {"message", "asctime"}
+_RESERVED = set(logging.LogRecord("", 0, "", 0, "", (), None).__dict__) | {
+    "message",
+    "asctime",
+    "color_message",
+}
 
 
 class _CorrelationFilter(logging.Filter):

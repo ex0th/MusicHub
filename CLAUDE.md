@@ -49,7 +49,7 @@ frontend/
   src/lib/             api.ts (Client), auth.ts (TokenProvider), types.ts, session.ts
   src/pages/           index.astro (Übersicht), library.astro (Sammlung)
   src/layouts/         Base.astro (Layout + globale Styles)
-  nginx/               nginx-Template (statisch + /api-Proxy)
+  nginx/               nginx-Konfiguration (statisch + /api-Proxy)
 compose.yaml           Betrieb/Arcane (GHCR-Images)
 compose.dev.yaml       Entwicklung (Build, Hot Reload)
 .github/workflows/ci.yml

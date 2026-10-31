@@ -20,9 +20,7 @@ RUN pnpm build
 # --- Auslieferung über nginx (unprivilegiert, Port 8080) -----------------------------
 FROM nginxinc/nginx-unprivileged:stable-alpine AS runtime
 ARG BUILD_SHA=dev
-# Upstream des Backends; wird beim Start per envsubst in die nginx-Konfiguration geschrieben
-ENV MUSICHUB_BACKEND_UPSTREAM=backend:8000
-COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
+COPY nginx/default.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

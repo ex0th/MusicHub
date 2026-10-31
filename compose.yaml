@@ -79,7 +79,6 @@ services:
     read_only: true
     tmpfs:
       - /tmp
-      - /etc/nginx/conf.d
 
 volumes:
   postgres-data:
