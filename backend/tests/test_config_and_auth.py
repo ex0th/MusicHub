@@ -120,9 +120,9 @@ def test_oidc_rejects_garbage(verifier: OidcVerifier) -> None:
 def test_empty_env_values_count_as_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     from musichub.connectors.platforms import YouTubeConnector
 
-    monkeypatch.setenv("MUSICHUB_YOUTUBE_API_KEY", "")
+    monkeypatch.setenv("MUSICHUB_YOUTUBE_CLIENT_ID", "")
     monkeypatch.setenv("MUSICHUB_OIDC_WRITE_GROUP", "")
     settings = Settings()
-    assert settings.youtube_api_key is None
+    assert settings.youtube_client_id is None
     assert settings.oidc_write_group is None
     assert not YouTubeConnector(settings).is_configured()

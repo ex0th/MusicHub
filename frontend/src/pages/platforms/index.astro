@@ -7,80 +7,404 @@ import Base from "../../layouts/Base.astro";
     <div>
       <h1>Plattformen</h1>
       <p class="lede">
-        MusicHub funktioniert ohne Plattform-Konten. Links zu Spotify, SoundCloud und YouTube trägst
-        du in der Track-Ansicht ein; automatischer Abgleich folgt, sobald ein Konto verbunden ist.
+        Verbinde Spotify, YouTube und SoundCloud, um deine Playlists in die Bibliothek zu holen.
+        MusicHub liest dabei nur – auf den Plattformen wird nichts verändert. Ohne Konto
+        funktionieren Links in der Track-Ansicht und der Dateiimport wie gewohnt.
       </p>
     </div>
   </div>
 
   <div id="content">
-    <div class="platform-list" id="platforms"></div>
+    <div class="platform-list" id="platforms"><p class="empty">Lade …</p></div>
   </div>
 </Base>
 
 <script>
+  import {
+    CALLBACK_ERRORS,
+    CONNECTION_TEXT,
+    PLATFORM_NOTES,
+    PLAYLIST_STATE_TEXT,
+    connectionState,
+    isActive,
+    jobPercent,
+    jobResultText,
+    jobStatusText,
+    playlistState,
+  } from "../../lib/connections";
   import { PLATFORMS } from "../../lib/platforms";
   import { createSession, requireLogin } from "../../lib/session";
-  import type { ConnectorState } from "../../lib/types";
-  import { $, errorMessage, h, plural } from "../../lib/ui";
+  import type { Connection, Job, LibraryStats, Platform, RemotePlaylist } from "../../lib/types";
+  import { $, confirmDialog, errorMessage, formatDateTime, h, plural, toast } from "../../lib/ui";
 
   const { api, tokens } = createSession();
+  const box = $("#platforms");
 
-  const STATE: Record<ConnectorState, string> = {
-    not_configured: "Kein Konto verbunden",
-    ready: "Verbunden",
-    degraded: "Gestört – letzte Anfragen fehlgeschlagen",
-    suspended: "Vorübergehend pausiert",
+  /** Auswahl je Plattform bleibt über Aktualisierungen hinweg erhalten. */
+  const selected: Record<Platform, Set<string>> = {
+    spotify: new Set(),
+    soundcloud: new Set(),
+    youtube: new Set(),
   };
+  const openLists = new Set<Platform>();
+  let timer = 0;
 
-  async function load() {
-    const box = $("#platforms");
+  function showCallbackResult(): void {
+    const params = new URLSearchParams(window.location.search);
+    const platform = params.get("platform");
+    if (!platform) return;
+    const label = PLATFORMS.find((p) => p.id === platform)?.label ?? platform;
+    const error = params.get("error");
+    if (params.get("connected")) {
+      toast(`${label} verbunden. Die Playlists werden im Hintergrund abgerufen.`);
+      openLists.add(platform as Platform);
+    } else if (error) {
+      toast(`${label}: ${CALLBACK_ERRORS[error] ?? "Anmeldung fehlgeschlagen."}`, "error");
+    }
+    history.replaceState(null, "", window.location.pathname);
+  }
+
+  async function run(button: HTMLButtonElement, work: () => Promise<void>): Promise<void> {
+    button.disabled = true;
     try {
-      const [stats, connectors] = await Promise.all([api.stats(), api.connectors()]);
-      box.replaceChildren(
-        ...PLATFORMS.map((p) => {
-          const s = stats.platforms.find((x) => x.platform === p.id);
-          const c = connectors.find((x) => x.platform === p.id);
-          const missing = stats.tracks - (s?.tracks ?? 0);
-          return h(
-            "article",
-            { class: "platform panel" },
+      await work();
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function action(label: string, cls: string, work: () => Promise<void>): HTMLButtonElement {
+    const b = h("button", { type: "button", class: cls }, label);
+    b.addEventListener("click", () => void run(b, work));
+    return b;
+  }
+
+  // --- Bausteine ---------------------------------------------------------------------
+
+  function jobRow(job: Job, playlists: Map<string, RemotePlaylist>): HTMLElement {
+    const percent = jobPercent(job);
+    const target = job.remote_playlist_id ? playlists.get(job.remote_playlist_id)?.name : null;
+    const summary = job.status === "succeeded" ? jobResultText(job) : "";
+    return h(
+      "li",
+      { class: "pj", "data-status": job.status },
+      h(
+        "div",
+        { class: "pj-head" },
+        h("strong", {}, target ? `${job.label}: ${target}` : job.label),
+        h("span", { class: "pj-state" }, jobStatusText(job)),
+      ),
+      isActive(job) || job.status === "succeeded"
+        ? h(
+            "span",
+            {
+              class: "pj-bar",
+              role: "progressbar",
+              "aria-valuemin": 0,
+              "aria-valuemax": 100,
+              "aria-valuenow": percent ?? undefined,
+              "aria-label": job.label,
+              "data-indeterminate": percent === null && isActive(job) ? "true" : null,
+            },
+            h("span", { style: `width:${percent ?? 35}%` }),
+          )
+        : null,
+      summary ? h("span", { class: "pj-sub muted" }, summary) : null,
+      job.last_error && job.status !== "succeeded"
+        ? h("span", { class: "pj-sub error-line" }, job.last_error)
+        : null,
+      h("span", { class: "pj-sub faint" }, formatDateTime(job.finished_at ?? job.created_at)),
+    );
+  }
+
+  function playlistTable(c: Connection, playlists: RemotePlaylist[]): HTMLElement {
+    const platform = c.platform;
+    const chosen = selected[platform];
+    const importable = playlists.filter((p) => p.items_accessible && !p.removed);
+    for (const id of [...chosen]) if (!importable.some((p) => p.id === id)) chosen.delete(id);
+
+    const importButton = h("button", { type: "button" }, "");
+    const updateButton = () => {
+      importButton.textContent = chosen.size
+        ? `${plural(chosen.size, "Playlist", "Playlists")} importieren`
+        : "Playlists auswählen";
+      importButton.disabled = chosen.size === 0;
+    };
+    importButton.addEventListener("click", () =>
+      void run(importButton, async () => {
+        const jobs = await api.importRemotePlaylists(platform, [...chosen]);
+        toast(`${plural(jobs.length, "Import", "Importe")} eingeplant – läuft im Hintergrund.`);
+        chosen.clear();
+        await load();
+      }),
+    );
+
+    const all = h("input", { type: "checkbox", "aria-label": "Alle auswählen" });
+    all.checked = importable.length > 0 && importable.every((p) => chosen.has(p.id));
+    all.disabled = importable.length === 0;
+    const rows = playlists.map((p) => {
+      const state = playlistState(p);
+      const box = h("input", { type: "checkbox", "aria-label": `${p.name} auswählen` });
+      box.checked = chosen.has(p.id);
+      box.disabled = !p.items_accessible || p.removed;
+      box.addEventListener("change", () => {
+        if (box.checked) chosen.add(p.id);
+        else chosen.delete(p.id);
+        all.checked = importable.every((x) => chosen.has(x.id));
+        updateButton();
+      });
+      const stateCell = h("td", {}, h("span", { class: "pl-state", "data-state": state }, PLAYLIST_STATE_TEXT[state]));
+      if (p.local_playlist_id) {
+        stateCell.append(
+          h("a", { class: "pl-sub", href: `/playlist/?id=${encodeURIComponent(p.local_playlist_id)}` }, `→ ${p.local_playlist_name ?? "Playlist"}`),
+        );
+      }
+      if (state === "blocked") {
+        stateCell.append(h("span", { class: "pl-sub faint" }, "Plattform gibt nur Name und Anzahl frei"));
+      }
+      if (p.last_error) stateCell.append(h("span", { class: "pl-sub error-line" }, p.last_error));
+      return h(
+        "tr",
+        { "data-state": state },
+        h("td", { class: "pl-check" }, box),
+        h(
+          "td",
+          { class: "t-title" },
+          p.url
+            ? h("a", { href: p.url, target: "_blank", rel: "noopener noreferrer" }, p.name)
+            : h("span", {}, p.name),
+          h("span", { class: "pl-sub muted" }, [p.owned ? null : p.owner_name, p.last_imported_at ? `importiert ${formatDateTime(p.last_imported_at)}` : null].filter(Boolean).join(" · ")),
+        ),
+        h("td", { class: "right num hide-sm" }, p.track_count ?? "–"),
+        stateCell,
+      );
+    });
+    all.addEventListener("change", () => {
+      for (const p of importable) {
+        if (all.checked) chosen.add(p.id);
+        else chosen.delete(p.id);
+      }
+      for (const input of all.closest("table")?.querySelectorAll<HTMLInputElement>("tbody input") ?? []) {
+        if (!input.disabled) input.checked = all.checked;
+      }
+      updateButton();
+    });
+    updateButton();
+
+    return h(
+      "div",
+      { class: "pl-wrap" },
+      playlists.length
+        ? h(
+            "div",
+            { class: "table-wrap" },
             h(
-              "header",
-              {},
-              h("h2", {}, p.label),
+              "table",
+              { class: "data pl-table" },
               h(
-                "span",
-                { class: "conn", "data-state": c?.state ?? "not_configured" },
-                STATE[c?.state ?? "not_configured"],
+                "thead",
+                {},
+                h(
+                  "tr",
+                  {},
+                  h("th", { scope: "col", class: "pl-check" }, all),
+                  h("th", { scope: "col" }, "Playlist"),
+                  h("th", { scope: "col", class: "right hide-sm" }, "Tracks"),
+                  h("th", { scope: "col" }, "Status"),
+                ),
               ),
+              h("tbody", {}, ...rows),
             ),
-            h(
-              "dl",
-              { class: "facts" },
-              h("div", {}, h("dt", {}, "Verfügbar"), h("dd", { class: "num" }, (s?.tracks ?? 0).toLocaleString("de-DE"))),
-              h("div", {}, h("dt", {}, "Nur hier"), h("dd", { class: "num" }, (s?.exclusive ?? 0).toLocaleString("de-DE"))),
-              h("div", {}, h("dt", {}, "Nicht mehr verfügbar"), h("dd", { class: "num" }, (s?.unavailable ?? 0).toLocaleString("de-DE"))),
-              h("div", {}, h("dt", {}, "Ohne Verknüpfung"), h("dd", { class: "num" }, missing.toLocaleString("de-DE"))),
-            ),
-            c?.last_error ? h("p", { class: "error-line" }, c.last_error) : null,
-            h(
-              "div",
-              { class: "actions" },
-              h("a", { class: "button ghost", href: `/library/?platform=${p.id}` }, "Verknüpfte Tracks"),
-              missing
-                ? h("a", { class: "button ghost", href: `/library/?missing=${p.id}` }, plural(missing, "fehlender Track", "fehlende Tracks"))
-                : null,
-            ),
-          );
+          )
+        : h("p", { class: "empty" }, c.account?.playlists_synced_at ? "Keine Playlists gefunden." : "Playlists werden abgerufen …"),
+      h(
+        "div",
+        { class: "actions" },
+        importButton,
+        h("span", { class: "faint" }, "Vorhandene Tracks werden erkannt und nicht doppelt angelegt. Bereits importierte Playlists werden nur ergänzt."),
+      ),
+    );
+  }
+
+  function setup(c: Connection): HTMLElement {
+    return h(
+      "div",
+      { class: "pf-setup" },
+      h("p", {}, "Zum Verbinden fehlen in der Konfiguration (.env):"),
+      h("ul", { class: "plain pf-missing" }, ...c.missing.map((m) => h("li", {}, h("code", {}, m)))),
+      c.redirect_uri
+        ? h("p", { class: "muted" }, "Redirect-URI für die App der Plattform: ", h("code", {}, c.redirect_uri))
+        : h("p", { class: "muted" }, "Die Redirect-URI ergibt sich aus MUSICHUB_PUBLIC_URL."),
+    );
+  }
+
+  function card(
+    c: Connection,
+    stats: LibraryStats["platforms"][number] | undefined,
+    playlists: RemotePlaylist[],
+    jobs: Job[],
+  ): HTMLElement {
+    const state = connectionState(c);
+    const platform = c.platform;
+    const byId = new Map(playlists.map((p) => [p.id, p]));
+    const actions: HTMLElement[] = [];
+
+    if (state === "disconnected" || state === "reauth") {
+      actions.push(
+        action(state === "reauth" ? `${c.label} neu verbinden` : `Mit ${c.label} verbinden`, "", async () => {
+          const { authorize_url } = await api.authorizeConnection(platform);
+          window.location.assign(authorize_url);
         }),
       );
+    }
+    if (state === "connected") {
+      actions.push(
+        action("Playlists aktualisieren", "ghost", async () => {
+          await api.refreshRemotePlaylists(platform);
+          openLists.add(platform);
+          await load();
+        }),
+      );
+      if (c.changed) {
+        actions.push(
+          action(`${plural(c.changed, "geänderte Playlist", "geänderte Playlists")} aktualisieren`, "ghost", async () => {
+            await api.refreshRemotePlaylists(platform, true);
+            await load();
+          }),
+        );
+      }
+      if (c.capabilities.includes("refresh_metadata")) {
+        actions.push(
+          action("Metadaten aktualisieren", "quiet", async () => {
+            await api.refreshMetadata(platform);
+            toast("Metadaten werden im Hintergrund aktualisiert.");
+            await load();
+          }),
+        );
+      }
+    }
+    if (c.account) {
+      actions.push(
+        action("Trennen", "quiet", async () => {
+          const ok = await confirmDialog({
+            title: `${c.label} trennen?`,
+            message:
+              "Die gespeicherten Zugangsdaten werden gelöscht" +
+              (platform === "youtube" ? " und bei Google widerrufen" : "") +
+              ". Importierte Tracks und Playlists bleiben in deiner Bibliothek." +
+              (platform === "spotify" ? " Den Zugriff der App kannst du zusätzlich in deinem Spotify-Konto unter „Apps“ entfernen." : ""),
+            confirm: "Trennen",
+            danger: true,
+          });
+          if (!ok) return;
+          await api.disconnect(platform);
+          toast(`${c.label} getrennt.`);
+          await load();
+        }),
+      );
+    }
+
+    const facts = h(
+      "dl",
+      { class: "facts" },
+      h("div", {}, h("dt", {}, "Playlists auf der Plattform"), h("dd", { class: "num" }, c.account ? c.playlists.toLocaleString("de-DE") : "–")),
+      h("div", {}, h("dt", {}, "Davon importiert"), h("dd", { class: "num" }, c.imported.toLocaleString("de-DE"))),
+      h("div", {}, h("dt", {}, "In der Bibliothek verfügbar"), h("dd", { class: "num" }, (stats?.tracks ?? 0).toLocaleString("de-DE"))),
+      h("div", {}, h("dt", {}, "Nicht mehr verfügbar"), h("dd", { class: "num" }, (stats?.unavailable ?? 0).toLocaleString("de-DE"))),
+    );
+
+    const syncLine: string[] = [];
+    if (c.account) {
+      syncLine.push(`Letzter erfolgreicher Import: ${c.account.last_import_at ? formatDateTime(c.account.last_import_at) : "noch keiner"}`);
+      syncLine.push(`Playlist-Liste: ${c.account.playlists_synced_at ? formatDateTime(c.account.playlists_synced_at) : "wird abgerufen"}`);
+      if (c.changed) syncLine.push(`${plural(c.changed, "importierte Playlist hat", "importierte Playlists haben")} sich auf ${c.label} geändert`);
+      if (c.failed) syncLine.push(`${plural(c.failed, "Import", "Importe")} mit Fehler`);
+    }
+
+    const recent = jobs.slice(0, 6);
+    const list = h(
+      "details",
+      { class: "pf-playlists", open: openLists.has(platform) || undefined },
+      h("summary", {}, `Importierbare Playlists${c.account ? ` (${c.playlists})` : ""}`),
+      playlistTable(c, playlists),
+    );
+    list.addEventListener("toggle", () => {
+      if ((list as HTMLDetailsElement).open) openLists.add(platform);
+      else openLists.delete(platform);
+    });
+
+    return h(
+      "article",
+      { class: "platform panel", "data-state": state },
+      h(
+        "header",
+        {},
+        h("h2", {}, c.label),
+        h("span", { class: "conn", "data-state": state }, CONNECTION_TEXT[state]),
+      ),
+      c.account
+        ? h(
+            "p",
+            { class: "pf-account" },
+            h("span", {}, "Konto: ", h("strong", {}, c.account.display_name)),
+            h("span", { class: "muted" }, ` · verbunden ${formatDateTime(c.account.connected_at)} · nur lesend`),
+          )
+        : null,
+      c.account?.last_error ? h("p", { class: "error-line" }, c.account.last_error) : null,
+      facts,
+      syncLine.length ? h("p", { class: "pf-sync muted" }, syncLine.join(" · ")) : null,
+      state === "unconfigured" ? setup(c) : null,
+      actions.length ? h("div", { class: "actions" }, ...actions) : null,
+      recent.length
+        ? h("section", { class: "pf-jobs", "aria-label": "Hintergrundjobs" }, h("h3", {}, "Hintergrundjobs"), h("ul", { class: "plain" }, ...recent.map((j) => jobRow(j, byId))))
+        : null,
+      c.account ? list : null,
+      h(
+        "details",
+        { class: "pf-notes" },
+        h("summary", {}, "Voraussetzungen und Grenzen"),
+        h("ul", {}, ...PLATFORM_NOTES[platform].map((n) => h("li", {}, n))),
+      ),
+      h(
+        "div",
+        { class: "actions pf-links" },
+        h("a", { class: "button ghost", href: `/library/?platform=${platform}` }, "Verknüpfte Tracks"),
+        h("a", { class: "button ghost", href: `/library/?missing=${platform}` }, "Fehlende Tracks"),
+      ),
+    );
+  }
+
+  // --- Laden und Aktualisieren ------------------------------------------------------
+
+  async function load(): Promise<void> {
+    window.clearTimeout(timer);
+    try {
+      const [connections, stats, jobs] = await Promise.all([api.connections(), api.stats(), api.jobs(undefined, 60)]);
+      const playlists = await Promise.all(
+        connections.map((c) => (c.account ? api.remotePlaylists(c.platform) : Promise.resolve([] as RemotePlaylist[]))),
+      );
+      const order = PLATFORMS.map((p) => p.id);
+      const cards = connections
+        .map((c, i) => ({ c, playlists: playlists[i] ?? [] }))
+        .sort((a, b) => order.indexOf(a.c.platform) - order.indexOf(b.c.platform))
+        .map(({ c, playlists: pl }) =>
+          card(c, stats.platforms.find((s) => s.platform === c.platform), pl, jobs.filter((j) => j.platform === c.platform)),
+        );
+      box.replaceChildren(...cards);
+      const running = jobs.some((j) => j.status === "queued" || j.status === "running");
+      const waiting = jobs.some((j) => j.status === "failed");
+      if (running || waiting) timer = window.setTimeout(() => void load(), running ? 2000 : 30000);
     } catch (e) {
       box.replaceChildren(h("div", { class: "notice" }, h("p", {}, errorMessage(e))));
     }
   }
 
-  if (requireLogin(tokens, $("#content"))) load();
+  if (requireLogin(tokens, $("#content"))) {
+    showCallbackResult();
+    void load();
+  }
 </script>
 
 <style is:global>
@@ -88,17 +412,29 @@ import Base from "../../layouts/Base.astro";
     display: grid;
     gap: 16px;
   }
+  .platform {
+    display: grid;
+    gap: 14px;
+  }
   .platform header {
     display: flex;
     justify-content: space-between;
     align-items: baseline;
     gap: 12px;
     flex-wrap: wrap;
-    margin-bottom: 14px;
   }
   .platform h2 {
     margin: 0;
     font-size: 1.2rem;
+  }
+  .platform h3 {
+    margin: 0 0 8px;
+    font-size: 0.92rem;
+    color: var(--muted);
+    font-weight: 600;
+  }
+  .platform p {
+    margin: 0;
   }
   .conn {
     font-size: 0.86rem;
@@ -113,23 +449,22 @@ import Base from "../../layouts/Base.astro";
     border-radius: 50%;
     border: 1.5px solid var(--faint);
   }
-  .conn[data-state="ready"]::before {
+  .conn[data-state="connected"]::before {
     background: var(--ok);
     border-color: var(--ok);
   }
-  .conn[data-state="degraded"]::before {
+  .conn[data-state="reauth"]::before {
     background: var(--warn);
     border-color: var(--warn);
   }
-  .conn[data-state="suspended"]::before {
-    background: var(--danger);
-    border-color: var(--danger);
+  .conn[data-state="disconnected"]::before {
+    border-color: var(--muted);
   }
   .facts {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 12px;
-    margin: 0 0 16px;
+    margin: 0;
   }
   .facts div {
     display: flex;
@@ -147,6 +482,154 @@ import Base from "../../layouts/Base.astro";
   .error-line {
     color: var(--danger);
     font-size: 0.88rem;
+  }
+  .pf-sync {
+    font-size: 0.88rem;
+  }
+  .pf-setup {
+    padding: 14px 16px;
+    border: 1px dashed var(--line-strong);
+    border-radius: var(--r-sm);
+    display: grid;
+    gap: 8px;
+    font-size: 0.9rem;
+  }
+  .pf-setup code,
+  .pf-notes code {
+    font-size: 0.85rem;
+    overflow-wrap: anywhere;
+  }
+  ul.pf-missing {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .pf-jobs ul {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .pj {
+    display: grid;
+    gap: 4px;
+    padding: 10px 12px;
+    border-radius: var(--r-sm);
+    background: var(--raised);
+    font-size: 0.88rem;
+  }
+  .pj-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .pj-state {
+    color: var(--muted);
+  }
+  .pj[data-status="dead"] .pj-state {
+    color: var(--danger);
+  }
+  .pj[data-status="failed"] .pj-state {
+    color: var(--warn);
+  }
+  .pj-bar {
+    display: block;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--line);
+    overflow: hidden;
+  }
+  .pj-bar > span {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.4s ease;
+  }
+  .pj[data-status="succeeded"] .pj-bar > span {
+    background: var(--ok);
+  }
+  .pj-bar[data-indeterminate] > span {
+    animation: pj-slide 1.4s ease-in-out infinite;
+  }
+  @keyframes pj-slide {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(300%);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pj-bar[data-indeterminate] > span {
+      animation: none;
+    }
+  }
+  .pj-sub {
+    font-size: 0.82rem;
+  }
+  .pf-playlists > summary,
+  .pf-notes > summary {
+    cursor: pointer;
+    color: var(--muted);
+  }
+  .pf-playlists[open] > summary {
+    margin-bottom: 10px;
+  }
+  .pl-wrap {
+    display: grid;
+    gap: 12px;
+  }
+  .pl-check {
+    width: 36px;
+  }
+  .pl-table input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--accent);
+  }
+  .pl-state {
+    font-size: 0.86rem;
+  }
+  .pl-sub {
+    display: block;
+    font-size: 0.82rem;
+  }
+  .pl-sub:empty {
+    display: none;
+  }
+  .pl-state[data-state="changed"] {
+    color: var(--warn);
+  }
+  .pl-state[data-state="current"] {
+    color: var(--ok);
+  }
+  .pl-state[data-state="blocked"],
+  .pl-state[data-state="removed"] {
+    color: var(--faint);
+  }
+  .pl-state[data-state="error"] {
+    color: var(--danger);
+  }
+  .pl-table tr[data-state="blocked"] td,
+  .pl-table tr[data-state="removed"] td {
+    color: var(--muted);
+  }
+  .pf-notes ul {
+    margin: 8px 0 0;
+    padding-left: 20px;
+    color: var(--muted);
+    font-size: 0.88rem;
+    display: grid;
+    gap: 4px;
+  }
+  .pf-links {
+    border-top: 1px solid var(--line);
+    padding-top: 12px;
   }
   @media (max-width: 720px) {
     .facts {

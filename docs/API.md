@@ -195,6 +195,27 @@ Ablauf, Formate und Regeln: [IMPORT_EXPORT.md](IMPORT_EXPORT.md).
 | GET | `/api/v1/export/library?format=csv\|json` | gesamte Bibliothek (Download) |
 | GET | `/api/v1/playlists/{id}/export?format=csv\|json` | eine Playlist (Download) |
 
+### Plattform-Konten und Jobs
+
+Details, Scopes, Kontingente: [CONNECTORS.md](CONNECTORS.md). Alle Aktionen sind gegenüber
+den Plattformen lesend; Netzwerkzugriffe laufen als Hintergrundjob (Antwort `202` mit Job).
+
+| Methode | Pfad | Beschreibung |
+|---|---|---|
+| GET | `/api/v1/connections` | Je Plattform: `configured`, `missing` (fehlende Variablen), `redirect_uri`, `account` (ohne Tokens), Zähler `playlists`, `imported`, `changed`, `failed`, `active_jobs` |
+| POST | `/api/v1/connections/{platform}/authorize` | `{authorize_url}` – Browser dorthin leiten; nicht eingerichtet → `422` mit `missing` |
+| GET | `/api/oauth/callback/{platform}` | Rückruf der Plattform (öffentlich, über einmaligen `state` geschützt) → `303` nach `/platforms/?platform=…&connected=1` bzw. `&error=invalid_state\|expired\|denied\|invalid_request\|exchange_failed` |
+| DELETE | `/api/v1/connections/{platform}` | Trennen: Tokens löschen (YouTube: widerrufen) → `{revoked}`; importierte Daten bleiben |
+| GET | `/api/v1/connections/{platform}/playlists?include_removed=` | Playlists des Kontos mit Importzustand (`items_accessible`, `local_playlist_id`, `up_to_date`, `last_import_status`, `last_error`) |
+| POST | `/api/v1/connections/{platform}/playlists/refresh` | `{import_changed?}` – Liste aktualisieren, optional Geändertes neu importieren → Job |
+| POST | `/api/v1/connections/{platform}/import` | `{playlist_ids, force?}` → ein Job je Playlist; nicht lesbare Playlists → `422` |
+| POST | `/api/v1/connections/{platform}/refresh-metadata` | Verfügbarkeit/Metadaten verknüpfter Tracks → Job |
+| GET | `/api/v1/jobs?platform=&limit=` | Plattform-Jobs, neueste zuerst |
+| GET | `/api/v1/jobs/{id}` | Job mit `status`, `attempts`, `progress {current,total,message}`, `result`, `last_error`, `run_after` |
+
+Ohne verbundenes Konto antworten die Job-Endpunkte mit `409`, ebenso wenn das Konto neu
+verbunden werden muss.
+
 ### Matching
 
 Regeln, Score und Stufen: [MATCHING.md](MATCHING.md). Alle Pfade unter `/api/v1/matching`.

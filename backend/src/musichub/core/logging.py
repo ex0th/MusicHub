@@ -70,3 +70,6 @@ def configure_logging(level: str = "INFO", fmt: LogFormat = LogFormat.TEXT) -> N
         logging.getLogger(name).handlers.clear()
         logging.getLogger(name).propagate = True
     logging.getLogger("uvicorn.access").disabled = True
+    # httpx loggt jede Anfrage-URL auf INFO – zu laut, und Plattform-URLs gehören nicht ins Log
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)

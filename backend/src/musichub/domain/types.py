@@ -121,6 +121,23 @@ class MergeStatus(StrEnum):
     UNDONE = "undone"
 
 
+class AccountStatus(StrEnum):
+    """Zustand eines verbundenen Plattform-Kontos."""
+
+    CONNECTED = "connected"
+    #: Token abgelaufen/widerrufen – neu verbinden
+    REAUTH_REQUIRED = "reauth_required"
+
+
+class RemoteImportStatus(StrEnum):
+    """Ergebnis des letzten Imports einer Plattform-Playlist."""
+
+    OK = "ok"
+    #: seit dem letzten Import unverändert (inkrementell übersprungen)
+    UNCHANGED = "unchanged"
+    ERROR = "error"
+
+
 def sql_in(enum: type[StrEnum]) -> str:
     """Hilfsfunktion für CHECK-Constraints: "'a', 'b', 'c'"."""
     return ", ".join(f"'{m.value}'" for m in enum)

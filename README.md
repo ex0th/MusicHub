@@ -8,7 +8,7 @@ die führende Instanz**: Ein Track existiert auch dann, wenn er auf keiner oder 
 Plattform verfügbar ist. Fällt eine Plattform aus, laufen Sammlung und alle anderen
 Plattformen ungestört weiter.
 
-> **Stand: Etappe 2c – Musikbibliothek mit Import/Export und Track-Matching.** Tracks, Plattform-Quellen, Tags und Playlists lassen
+> **Stand: Etappe 4a – Bibliothek, Import/Export, Matching und lesende Plattform-Connectoren.** Tracks, Plattform-Quellen, Tags und Playlists lassen
 > sich vollständig in der Weboberfläche und per REST-API verwalten – ganz ohne Plattform-Konten.
 > Links zu Spotify, SoundCloud und YouTube werden beim Einfügen erkannt. Die automatische
 > Anbindung der Plattform-APIs folgt in den nächsten Etappen, siehe [docs/ROADMAP.md](docs/ROADMAP.md).
@@ -33,8 +33,11 @@ Plattformen ungestört weiter.
   0–100 und Gründen; Remixes, Edits, Live- und andere Versionen werden nie automatisch
   zusammengeführt. Bestätigen, Ablehnen, Später prüfen, manueller Vergleich, Verlauf mit
   Rückgängig ([Details](docs/MATCHING.md))
-- **Plattformen und Einstellungen:** Zahlen je Plattform, Anmeldung, helles/dunkles Schema,
-  Tag-Verwaltung
+- **Plattformen:** Spotify- und YouTube-Konto per OAuth verbinden (SoundCloud vorbereitet,
+  braucht Artist Pro), eigene Playlists auswählen und im Hintergrund importieren –
+  mit Fortschritt, Wiederholung bei Rate-Limits und inkrementeller Aktualisierung. Rein
+  lesend, Tokens nur verschlüsselt ([Details](docs/CONNECTORS.md))
+- **Einstellungen:** Anmeldung, helles/dunkles Schema, Tag-Verwaltung
 
 ## Inhalt
 
@@ -52,7 +55,8 @@ Plattformen ungestört weiter.
 | Frontend | Astro, TypeScript, statisch ausgeliefert über nginx | `frontend/` |
 | Backend/API | Python 3.13, FastAPI, Pydantic, SQLAlchemy 2 | `backend/src/musichub/api` |
 | Datenbank | PostgreSQL 17, Migrationen mit Alembic | `backend/src/musichub/models`, `…/migrations` |
-| Plattform-Connectoren | gemeinsame Schnittstelle + Registry mit Fehlerisolation | `…/connectors` |
+| Plattform-Connectoren | Spotify, YouTube, SoundCloud (lesend), Registry mit Fehlerisolation | `…/connectors` |
+| Plattform-Konten | OAuth, verschlüsselte Tokens, Import-Jobs | `…/connections` |
 | Matching-Engine | reine Funktionen (Versionserkennung, Confidence 0–100, Blocking) | `…/matching` |
 | Synchronisations-Engine | reine Sync-Planung lokal → Plattform | `…/sync` |
 | Hintergrundjobs | Job-Queue in PostgreSQL, eigener Worker-Container | `…/jobs` |
@@ -192,12 +196,23 @@ in einer späteren Etappe, die API ist dafür bereits fertig.
 > existiert, den Zugang über den Reverse Proxy absichern (z. B. Authentik-Forward-Auth)
 > oder `MUSICHUB_HTTP_BIND=127.0.0.1` lassen.
 
+### Plattform-Konten (optional)
+
+Für Spotify/YouTube in `.env` setzen: `MUSICHUB_PUBLIC_URL` (Adresse, unter der der
+Browser MusicHub aufruft), `MUSICHUB_TOKEN_ENCRYPTION_KEY` (32 Byte Base64) und die
+Client-ID/-Secret der jeweiligen App. Redirect-URI in der App der Plattform:
+`<PUBLIC_URL>/api/oauth/callback/<plattform>` – Spotify verlangt dafür HTTPS oder
+`http://127.0.0.1:<port>`. Voraussetzungen (Spotify Premium für den App-Besitzer, YouTube-
+Kontingent, SoundCloud Artist Pro) und Schritt-für-Schritt-Anleitung:
+[docs/CONNECTORS.md](docs/CONNECTORS.md). Ohne diese Werte bleibt alles andere nutzbar.
+
 ## Weitere Dokumentation
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) – Komponenten, Abhängigkeiten, Fehlerisolation
 - [docs/DATABASE.md](docs/DATABASE.md) – Schema, Konventionen, Migrationen
 - [docs/API.md](docs/API.md) – Endpunkte, Auth, Fehlerformat
 - [docs/IMPORT_EXPORT.md](docs/IMPORT_EXPORT.md) – Importformate, Spalten, Ablauf, Export
+- [docs/CONNECTORS.md](docs/CONNECTORS.md) – Plattform-APIs, Einrichtung, Scopes, Kontingente
 - [docs/MATCHING.md](docs/MATCHING.md) – Erkennung gleicher Tracks, Score, Regeln, Zusammenführen
 - [docs/ROADMAP.md](docs/ROADMAP.md) – Etappen und offene Punkte
 - [CLAUDE.md](CLAUDE.md) – Projektkontext und Regeln für Claude Code

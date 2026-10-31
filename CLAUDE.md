@@ -41,6 +41,14 @@ Instanz**, Playlists werden von dort nach Spotify, SoundCloud und YouTube synchr
 15. **Automatisch nur `certain` ohne Blocker** (`MatchAssessment.auto_merge_allowed`).
     Neue Matching-Regeln zuerst als Testfall (`MUST_NOT_AUTO_MERGE`) und `ENGINE_VERSION`
     erhöhen; abgelehnte Paare (`match_candidates.status = rejected`) nie überschreiben.
+16. **Plattformen nur lesen** (bis Schreiben ausdrücklich freigegeben ist): keine Scopes
+    oder Endpunkte, die Playlists/Bibliotheken ändern. `connectors/http.py::ApiClient`
+    kennt nur GET; `test_connectors_never_write_to_platform_apis` nicht abschwächen.
+    Nur offizielle APIs – kein Scraping, keine fremden Client-IDs.
+17. **Tokens nur verschlüsselt** (`connections/crypto.py`), nie in API-Antworten, Logs oder
+    Fehlermeldungen. Token-Erneuerung nur über `connections/service.access_token`
+    (eigene Transaktion mit Sperre). Netzwerkzugriffe auf Plattformen nur in Jobs
+    (Ausnahme: Code-Tausch im OAuth-Rückruf).
 
 ## Struktur
 
@@ -54,24 +62,29 @@ backend/
     domain/            types.py (Platform, LinkStatus, Availability, MatchMethod, JobStatus),
                        platform_urls.py (Links erkennen/erzeugen, ohne Netzwerk)
     db/                Engine/Session, Basis-Modell, Migrations-Status, migrate (Advisory-Lock)
-    models/            SQLAlchemy-Modelle (library.py, imports.py, matching.py, job.py) –
-                       in models/__init__ exportieren
+    models/            SQLAlchemy-Modelle (library.py, imports.py, matching.py, connections.py,
+                       job.py) – in models/__init__ exportieren
     migrations/        Alembic (env.py, versions/0001_…, 0002_bibliothek, 0003_importprotokoll,
-                       0004_matching)
+                       0004_matching, 0005_plattform_konten)
     api/               schemas.py (Pydantic), routes/ (health, system, tracks, playlists, tags,
-                       imports, exports, matching)
+                       imports, exports, matching, connections [+ /api/oauth])
     library/           Fachlogik: tracks, sources, tags, playlists, stats, queries,
                        matching (Scan, Vorschläge), merge (Zusammenführen, Rückgängig)
     transfer/          Import/Export: decoding, records, formats/ (Adapter), matching,
                        service (Analyse, Commit, Bericht), export
-    connectors/        base.py (Schnittstelle, DTOs, Fehler), platforms.py, registry.py
+    connectors/        base.py (Schnittstelle, DTOs, Fehler), http.py (nur GET, Rate-Limits),
+                       oauth.py, spotify.py, youtube.py, soundcloud.py, platforms.py, registry.py
+    connections/       crypto.py (Token-Verschlüsselung), service.py (OAuth, Tokens, Status),
+                       importer.py (Jobs platform.*)
     matching/          engine.py (parse/compare, Confidence, Stufen), blocking.py (rein)
     sync/engine.py     plan_playlist_sync
     jobs/              queue.py, handlers.py (@handler), worker.py
-  tests/               pytest; DB-Tests mit @pytest.mark.db
+  tests/               pytest; DB-Tests mit @pytest.mark.db; fake_platforms.py (Plattform-APIs
+                       als httpx.MockTransport)
 frontend/
   src/lib/             api.ts (Client), types.ts, auth.ts, session.ts, ui.ts (h(), Toast,
-                       Dialog, Abdeckungsstreifen), platforms.ts, forms.ts, matching.ts
+                       Dialog, Abdeckungsstreifen), platforms.ts, forms.ts, matching.ts,
+                       connections.ts
   src/pages/           index (Dashboard), library/, track/?id=, playlists/, playlist/?id=,
                        matching/, platforms/, settings/, import/, import/run/?id=
   src/layouts/         Base.astro (Navigation)
@@ -82,7 +95,8 @@ frontend/
 compose.yaml           Betrieb/Arcane (GHCR-Images)
 compose.dev.yaml       Entwicklung (Build, Hot Reload)
 .github/workflows/ci.yml
-docs/                  ARCHITECTURE, DATABASE, API, ROADMAP, IMPORT_EXPORT, MATCHING
+docs/                  ARCHITECTURE, DATABASE, API, ROADMAP, IMPORT_EXPORT, MATCHING,
+                       CONNECTORS
 examples/import/       Beispieldateien je Importformat (auch Testdaten)
 ```
 

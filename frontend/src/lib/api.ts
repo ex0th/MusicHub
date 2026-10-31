@@ -5,11 +5,13 @@ import type { TokenProvider } from "./auth";
 import type {
   Availability,
   CandidateStatus,
+  Connection,
   ImportDecision,
   ImportFormats,
   ImportItem,
   ImportItemStatus,
   ImportRun,
+  Job,
   PlaylistImportMode,
   ConnectorStatus,
   LibraryStats,
@@ -23,9 +25,11 @@ import type {
   Me,
   Page,
   PlaylistDetail,
+  Platform,
   PlaylistSummary,
   Problem,
   ReadyResponse,
+  RemotePlaylist,
   SourceInput,
   Tag,
   TagWithCount,
@@ -322,6 +326,48 @@ export class ApiClient {
 
   discardImport(id: string): Promise<ImportRun> {
     return this.request(`/api/v1/imports/${enc(id)}/discard`, { method: "POST" });
+  }
+
+  // --- Plattform-Konten --------------------------------------------------------
+
+  connections(): Promise<Connection[]> {
+    return this.request("/api/v1/connections");
+  }
+
+  authorizeConnection(platform: Platform): Promise<{ authorize_url: string }> {
+    return this.request(`/api/v1/connections/${platform}/authorize`, { method: "POST" });
+  }
+
+  disconnect(platform: Platform): Promise<{ revoked: boolean }> {
+    return this.request(`/api/v1/connections/${platform}`, { method: "DELETE" });
+  }
+
+  remotePlaylists(platform: Platform): Promise<RemotePlaylist[]> {
+    return this.request(`/api/v1/connections/${platform}/playlists`);
+  }
+
+  refreshRemotePlaylists(platform: Platform, importChanged = false): Promise<Job> {
+    return this.request(`/api/v1/connections/${platform}/playlists/refresh`, {
+      method: "POST",
+      body: JSON.stringify({ import_changed: importChanged }),
+    });
+  }
+
+  importRemotePlaylists(platform: Platform, playlistIds: string[], force = false): Promise<Job[]> {
+    return this.request(`/api/v1/connections/${platform}/import`, {
+      method: "POST",
+      body: JSON.stringify({ playlist_ids: playlistIds, force }),
+    });
+  }
+
+  refreshMetadata(platform: Platform): Promise<Job> {
+    return this.request(`/api/v1/connections/${platform}/refresh-metadata`, { method: "POST" });
+  }
+
+  jobs(platform?: Platform, limit = 30): Promise<Job[]> {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (platform) query.set("platform", platform);
+    return this.request(`/api/v1/jobs?${query.toString()}`);
   }
 
   // --- Matching --------------------------------------------------------------

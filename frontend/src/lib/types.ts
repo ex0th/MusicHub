@@ -382,3 +382,76 @@ export interface TrackMerge {
   };
   filled_fields: string[];
 }
+
+// --- Plattform-Konten --------------------------------------------------------------
+
+export type AccountStatus = "connected" | "reauth_required";
+export type RemoteImportStatus = "ok" | "unchanged" | "error";
+export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "dead";
+
+export interface ConnectionAccount {
+  display_name: string;
+  external_user_id: string;
+  status: AccountStatus;
+  scopes: string[];
+  connected_at: string;
+  connected_by: string;
+  last_error: string | null;
+  playlists_synced_at: string | null;
+  last_import_at: string | null;
+}
+
+export interface Connection {
+  platform: Platform;
+  label: string;
+  configured: boolean;
+  missing: string[];
+  connector_state: string;
+  capabilities: string[];
+  read_only: boolean;
+  redirect_uri: string | null;
+  account: ConnectionAccount | null;
+  playlists: number;
+  imported: number;
+  changed: number;
+  failed: number;
+  active_jobs: number;
+}
+
+export interface RemotePlaylist {
+  id: string;
+  platform: Platform;
+  external_id: string;
+  name: string;
+  owner_name: string | null;
+  description: string | null;
+  track_count: number | null;
+  url: string | null;
+  owned: boolean;
+  items_accessible: boolean;
+  removed: boolean;
+  local_playlist_id: string | null;
+  local_playlist_name: string | null;
+  last_imported_at: string | null;
+  last_import_status: RemoteImportStatus | null;
+  last_import_run_id: string | null;
+  last_error: string | null;
+  up_to_date: boolean;
+}
+
+export interface Job {
+  id: string;
+  kind: string;
+  label: string;
+  platform: Platform | null;
+  remote_playlist_id: string | null;
+  status: JobStatus;
+  attempts: number;
+  max_attempts: number;
+  progress: { current?: number | null; total?: number | null; message?: string | null };
+  result: Record<string, unknown> | null;
+  last_error: string | null;
+  run_after: string;
+  created_at: string;
+  finished_at: string | null;
+}

@@ -37,6 +37,15 @@ def run_once(worker_id: str, connectors: ConnectorRegistry) -> bool:
             return False
         job_id, kind, payload = job.id, job.kind, dict(job.payload)
 
+    def progress(current: int, total: int | None, message: str | None) -> None:
+        try:
+            with sessions.begin() as s:
+                queue.set_progress(s, job_id, current, total, message)
+        except Exception:  # Fortschritt ist Komfort – nie den Job daran scheitern lassen
+            log.warning("Fortschritt konnte nicht gespeichert werden", exc_info=True)
+
+    ctx_result: dict[str, object] = {}
+
     token = correlation_id.set(f"job-{job_id.hex[:12]}")
     try:
         log.info("Starte Job %s", kind)
@@ -45,26 +54,37 @@ def run_once(worker_id: str, connectors: ConnectorRegistry) -> bool:
             if fn is None:
                 raise JobError(f"Unbekannter Job-Typ '{kind}'", retryable=False)
             with sessions.begin() as session:
-                fn(JobContext(session=session, connectors=connectors, payload=payload))
+                fn(
+                    JobContext(
+                        session=session,
+                        connectors=connectors,
+                        payload=payload,
+                        job_id=job_id,
+                        progress=progress,
+                        result=ctx_result,
+                    )
+                )
         except (JobError, ConnectorError) as exc:
-            _fail(job_id, str(exc), retryable=exc.retryable)
+            _fail(job_id, str(exc), retryable=exc.retryable, retry_after=exc.retry_after)
         except Exception as exc:
             log.exception("Job %s abgebrochen", kind)
             _fail(job_id, f"{type(exc).__name__}: {exc}", retryable=True)
         else:
             with sessions.begin() as session:
-                queue.mark_succeeded(session, job_id)
+                queue.mark_succeeded(session, job_id, dict(ctx_result))
             log.info("Job %s erfolgreich", kind)
     finally:
         correlation_id.reset(token)
     return True
 
 
-def _fail(job_id: uuid.UUID, error: str, *, retryable: bool) -> None:
+def _fail(
+    job_id: uuid.UUID, error: str, *, retryable: bool, retry_after: float | None = None
+) -> None:
     with get_sessionmaker().begin() as session:
         job = session.get(Job, job_id)
         if job is not None:
-            queue.mark_failed(session, job, error, retryable=retryable)
+            queue.mark_failed(session, job, error, retryable=retryable, retry_after=retry_after)
             log.warning(
                 "Job fehlgeschlagen (Versuch %d/%d): %s", job.attempts, job.max_attempts, error
             )

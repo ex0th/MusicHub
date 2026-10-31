@@ -8,8 +8,9 @@ die ``retryable``-Einstufung des Connectors; alles andere wird wiederholt.
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -20,9 +21,16 @@ log = logging.getLogger(__name__)
 
 
 class JobError(Exception):
-    def __init__(self, message: str, *, retryable: bool = True) -> None:
+    def __init__(
+        self, message: str, *, retryable: bool = True, retry_after: float | None = None
+    ) -> None:
         super().__init__(message)
         self.retryable = retryable
+        self.retry_after = retry_after
+
+
+def _no_progress(current: int, total: int | None, message: str | None) -> None:
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +38,11 @@ class JobContext:
     session: Session
     connectors: ConnectorRegistry
     payload: dict[str, Any]
+    job_id: uuid.UUID | None = None
+    #: Fortschritt melden – wird sofort in eigener Transaktion gespeichert
+    progress: Callable[[int, int | None, str | None], None] = _no_progress
+    #: Ergebnis (Zähler, Hinweise), wird bei Erfolg am Job gespeichert
+    result: dict[str, Any] = field(default_factory=dict)
 
 
 Handler = Callable[[JobContext], None]
@@ -59,3 +72,7 @@ def matching_scan(ctx: JobContext) -> None:
 
     result = scan(ctx.session)
     log.info("Matching-Vorschläge aktualisiert", extra={"new_candidates": result.created})
+
+
+# Job-Typen der Plattform-Konten registrieren (Import am Ende vermeidet Zirkelbezüge)
+from musichub.connections import importer as _platform_jobs  # noqa: E402, F401

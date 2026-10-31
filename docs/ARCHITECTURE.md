@@ -61,9 +61,14 @@ verbinden sie.
 
 ## Connectoren und Fehlerisolation
 
-Jeder Connector implementiert `PlatformConnector` (`connectors/base.py`) und liefert
-`RemoteTrack`/`RemotePlaylist`. Aufrufe laufen **ausschließlich** über
-`ConnectorRegistry.call(platform, fn)`:
+Jeder Connector implementiert `PlatformConnector` (`connectors/base.py`:
+`spotify.py`, `youtube.py`, `soundcloud.py`) und liefert neutrale DTOs (`RemoteTrack`,
+`RemotePlaylistInfo`, `TrackPage`, `RemoteAccount`, `OAuthTokens`). Connectoren speichern
+keine Tokens und kennen keine Datenbank – Tokens kommen bei jedem Aufruf aus
+`connections/service.py` (entschlüsselt, bei Bedarf erneuert). Der gemeinsame HTTP-Client
+(`connectors/http.py`) lässt gegenüber den Plattform-APIs nur GET zu (Etappe lesend),
+behandelt `429`/`Retry-After` und Kontingentfehler. Details: [CONNECTORS.md](CONNECTORS.md).
+Aufrufe laufen **ausschließlich** über `ConnectorRegistry.call(platform, fn)`:
 
 - Jede Ausnahme wird zu `ConnectorError` mit `platform` und `retryable`.
   Fremde Ausnahmen (`httpx`, `KeyError` aus kaputtem JSON …) werden eingekapselt.
@@ -71,13 +76,25 @@ Jeder Connector implementiert `PlatformConnector` (`connectors/base.py`) und lie
   Plattform 60 s nicht angesprochen (`ConnectorUnavailableError`). Andere Plattformen
   laufen weiter.
 - `ConnectorNotConfiguredError` / `ConnectorNotImplementedError` sind nicht wiederholbar
-  und zählen nicht als Störung.
+  und zählen nicht als Störung. `ConnectorAuthError` (Anmeldung ungültig) und
+  `ConnectorAccessError` (403/404) sind nicht wiederholbar; `RateLimitedError` trägt
+  `retry_after`, das der Worker als Wartezeit bis zum nächsten Versuch übernimmt.
 - Status je Plattform: `not_configured`, `ready`, `degraded`, `suspended`
   (`GET /api/v1/connectors`).
 
 Der Breaker-Zustand liegt im Speicher des jeweiligen Prozesses (API und Worker getrennt).
 Plattformübergreifende Vorgänge (z. B. "Playlist auf alle Ziele synchronisieren") werden
 als **ein Job pro Plattform** eingestellt, sodass ein Fehlschlag nur diesen Job betrifft.
+
+## Plattform-Konten
+
+`musichub.connections`: `crypto.py` (Fernet-Verschlüsselung der Tokens, Schlüsselrotation),
+`service.py` (OAuth-Start und -Rückruf mit einmaligem `state`, Token-Erneuerung in eigener
+Transaktion, Trennen, Status), `importer.py` (Jobs `platform.refresh_playlists`,
+`platform.import_playlist`, `platform.refresh_metadata`). Der Import nutzt denselben
+Importlauf wie Dateien (`transfer/service.analyze_parsed` + `commit`), erscheint also im
+Importprotokoll und erkennt Vorhandenes gleich. Netzwerkzugriffe auf Plattformen laufen nur
+im Worker; die API plant Jobs ein (Ausnahme: Code-Tausch im OAuth-Rückruf).
 
 ## Bibliothek
 

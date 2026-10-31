@@ -38,7 +38,7 @@ Etappen bauen aufeinander auf. Jede Etappe endet mit grüner CI und einem lauff�
 - Importprotokoll (`import_runs`, `import_items`), Bericht als CSV/JSON
 - Export der Bibliothek und einzelner Playlists als CSV/JSON, gegen Formula-Injection gesichert
 
-## ✅ Etappe 2c – Track-Matching (dieser Stand)
+## ✅ Etappe 2c – Track-Matching
 
 - Mehrstufige Engine: Normalisierung, Versionserkennung (Remix, VIP, Bootleg, Edit, Extended,
   Live, Cover …) mit Bearbeiter, Featuring, „Artist - Titel“-Lesart, ISRC, Dauer,
@@ -50,6 +50,19 @@ Etappen bauen aufeinander auf. Jede Etappe endet mit grüner CI und einem lauff�
   vollständig rückgängig (`track_merges`)
 - Bereich „Matching“: Gegenüberstellung, Gründe, Bestätigen/Ablehnen/Später prüfen, Verlauf,
   manueller Vergleich
+
+## ✅ Etappe 4a – Plattform-Connectoren, lesend (dieser Stand)
+
+- Spotify Web API (Development-Mode-Regeln 2026 berücksichtigt), YouTube Data API v3,
+  SoundCloud vorbereitet (Artist Pro nötig, kein Umgehungsweg) – Details in CONNECTORS.md
+- OAuth mit einmaligem `state` und PKCE (YouTube, SoundCloud), Tokens nur verschlüsselt
+  (`connector_accounts`), minimale Lese-Scopes, Trennen mit Widerruf (YouTube)
+- Hintergrundjobs mit Fortschritt, Ergebnis, Fehlerprotokoll, Rate-Limit-/Kontingent-
+  Behandlung (`Retry-After`), Backoff und inkrementeller Aktualisierung (Versionsmerkmal)
+- Import über den normalen Importlauf (Importprotokoll, Duplikaterkennung, nur ergänzen);
+  Metadaten-/Verfügbarkeitsabgleich verknüpfter Tracks
+- Seite „Plattformen“: Status, Konto, letzter Import, importierbare Playlists, Jobs
+- Streng lesend: keine Änderung an Plattform-Playlists (HTTP-Client nur GET, getestet)
 
 ## Etappe 2b – Bibliothek ausbauen
 
@@ -66,14 +79,12 @@ Etappen bauen aufeinander auf. Jede Etappe endet mit grüner CI und einem lauff�
 - Konfiguration des Frontends zur Laufzeit (`/config.json` aus nginx)
 - Benutzerbezug: Besitzer von Playlists/Connector-Konten
 
-## Etappe 4 – Erster Connector: Spotify
+## Etappe 4b – Schreiben und Suche
 
-- `connector_accounts`-Tabelle mit **verschlüsselten** OAuth-Tokens (Schlüssel aus Env)
-- SoundCloud-Permalinks beim ersten Abgleich auf numerische IDs umstellen
-- OAuth-Verbindung pro Benutzer, Token-Refresh
-- Suche, ISRC-Lookup, Playlists lesen/anlegen/ersetzen
-- Rate-Limits (HTTP 429, `Retry-After`) als wiederholbare Fehler
-- Tests mit aufgezeichneten Antworten (kein Netz in der CI)
+- Playlists auf Plattformen anlegen/ersetzen (eigene Freigabe, zusätzliche Scopes)
+- Suche/ISRC-Lookup je Plattform für fehlende Verknüpfungen (Spotify-Suche: max. 10 je Seite)
+- SoundCloud-Metadatenabgleich über `/resolve`, „Lieblingssongs“ (Spotify) optional
+- Konten pro Benutzer (mit Etappe 3), mehrere Konten je Plattform
 
 ## Etappe 5 – Matching und Sync produktiv
 
@@ -83,10 +94,10 @@ Etappen bauen aufeinander auf. Jede Etappe endet mit grüner CI und einem lauff�
 - Geplante Syncs (Zeitplan je Playlist), Anzeige von Sync-Historie und Fehlern
 - Verfügbarkeitsprüfung bestehender Links (`unavailable`)
 
-## Etappe 6 – SoundCloud und YouTube
+## Etappe 6 – SoundCloud und YouTube schreibend
 
-- SoundCloud-Connector (OAuth, Playlists)
-- YouTube-Connector (OAuth für Schreibzugriff, Quota-Verwaltung der Data API)
+- YouTube: Schreibzugriff (`playlists.insert` kostet 50 Einheiten) mit Kontingentplanung
+- SoundCloud-Connector mit echten Zugangsdaten verifizieren (bisher nur nachgebildet getestet)
 
 ## Später / Ideen
 
@@ -99,8 +110,12 @@ Etappen bauen aufeinander auf. Jede Etappe endet mit grüner CI und einem lauff�
 
 - Frontend-Anmeldung nur im Dev-Modus; mit `oidc` ist die API korrekt geschützt, die UI
   zeigt dann aber noch keinen Login → bis Etappe 3 Zugang per Reverse Proxy absichern.
-- Connectoren melden Konfiguration, die Operationen sind noch nicht implementiert.
-  Verfügbarkeit von Quellen wird bis dahin manuell gepflegt.
+- Connectoren lesen nur (Playlists, Inhalte, Metadaten); Schreiben/Suche folgen.
+- Ein Konto je Plattform und Instanz; Spotify im Development Mode max. 5 Nutzer und nur
+  eigene/kollaborative Playlists; YouTube im Status „Testing“ Anmeldung 7 Tage gültig.
+- SoundCloud nur mit eigener API-App (Artist Pro) und bisher nur gegen nachgebildete
+  Antworten getestet.
+- Auf der Plattform entfernte Tracks bleiben in importierten Playlists (nur ergänzen).
 - Pro Track und Plattform ist genau eine bestätigte Quelle möglich (z. B. nicht
   gleichzeitig Musikvideo und Audio auf YouTube); weitere nur als Vorschlag.
 - Playlist-Detail lädt alle Einträge auf einmal.

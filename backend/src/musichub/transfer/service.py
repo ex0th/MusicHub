@@ -54,7 +54,7 @@ from musichub.transfer.matching import (
     LibraryTrack,
     file_identity_keys,
 )
-from musichub.transfer.records import FormatError, ImportRecord
+from musichub.transfer.records import FormatError, ImportRecord, ParseResult
 
 log = logging.getLogger(__name__)
 
@@ -140,7 +140,26 @@ def analyze(
             PayloadTooLargeError if isinstance(exc, UploadTooLargeError) else UnprocessableError
         )
         raise error_cls(str(exc), extra={"import_id": str(run.id)}) from exc
+    return analyze_parsed(
+        db,
+        parsed,
+        filename=decoded.filename,
+        sha256=decoded.sha256,
+        size_bytes=decoded.size,
+        created_by=principal.subject,
+    )
 
+
+def analyze_parsed(
+    db: Session,
+    parsed: ParseResult,
+    *,
+    filename: str,
+    sha256: str,
+    size_bytes: int,
+    created_by: str,
+) -> ImportRun:
+    """Abgleich und Importlauf für bereits gelesene Datensätze (Datei oder Plattform-API)."""
     index = load_index(db)
     records = parsed.records
 
@@ -221,7 +240,7 @@ def analyze(
     previous = db.scalar(
         select(ImportRun)
         .where(
-            ImportRun.sha256 == decoded.sha256,
+            ImportRun.sha256 == sha256,
             ImportRun.status == ImportStatus.COMMITTED.value,
         )
         .order_by(ImportRun.committed_at.desc())
@@ -235,19 +254,19 @@ def analyze(
         )
 
     run = ImportRun(
-        filename=decoded.filename,
-        size_bytes=decoded.size,
-        sha256=decoded.sha256,
+        filename=filename,
+        size_bytes=size_bytes,
+        sha256=sha256,
         format=parsed.format,
         status=ImportStatus.ANALYZED.value,
-        created_by=principal.subject,
+        created_by=created_by,
         warnings=warnings,
         options={
             "playlists": playlists,
             "unassigned": {
                 "count": len(unassigned),
                 "enabled": bool(unassigned) and parsed.format in SINGLE_LIST_FORMATS,
-                "name": default_playlist_name(decoded.filename),
+                "name": default_playlist_name(filename),
             },
         },
         summary={},
@@ -702,5 +721,15 @@ def report_rows(db: Session, run: ImportRun) -> list[dict[str, Any]]:
     return rows
 
 
+#: Importe über Plattform-APIs (connections/importer.py) – keine Dateiformate
+API_FORMATS = {
+    "spotify_api": "Spotify (verbundenes Konto)",
+    "youtube_api": "YouTube (verbundenes Konto)",
+    "soundcloud_api": "SoundCloud (verbundenes Konto)",
+}
+
+
 def format_label(fmt: str | None) -> str | None:
+    if fmt in API_FORMATS:
+        return API_FORMATS[fmt]
     return FORMATS[fmt].label if fmt in FORMATS else fmt

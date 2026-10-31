@@ -20,12 +20,14 @@ from pydantic import (
 from musichub.connectors.base import Capability
 from musichub.connectors.registry import ConnectorState
 from musichub.domain.types import (
+    AccountStatus,
     Availability,
     CandidateStatus,
     ImportDecision,
     ImportItemStatus,
     ImportResult,
     ImportStatus,
+    JobStatus,
     LinkStatus,
     MatchLevel,
     MatchMethod,
@@ -33,6 +35,7 @@ from musichub.domain.types import (
     MergeStatus,
     Platform,
     PlaylistImportMode,
+    RemoteImportStatus,
 )
 
 NonEmpty = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
@@ -596,6 +599,108 @@ class MergeOut(ApiModel):
 class AutoMergeOut(ApiModel):
     merged: list[MergeOut]
     skipped: int
+
+
+# --- Plattform-Konten -------------------------------------------------------------
+
+
+class ConnectionAccountOut(ApiModel):
+    """Verbundenes Konto – bewusst ohne Tokens."""
+
+    display_name: str
+    external_user_id: str
+    status: AccountStatus
+    scopes: list[str]
+    connected_at: datetime
+    connected_by: str
+    last_error: str | None
+    playlists_synced_at: datetime | None
+    last_import_at: datetime | None
+
+
+class ConnectionOut(ApiModel):
+    platform: Platform
+    label: str
+    #: alle nötigen Einstellungen vorhanden (Client-ID/Secret, Public-URL, Schlüssel)
+    configured: bool
+    #: fehlende Umgebungsvariablen (nur Namen)
+    missing: list[str]
+    connector_state: str
+    capabilities: list[str]
+    #: diese Etappe verändert nichts auf der Plattform
+    read_only: bool = True
+    redirect_uri: str | None
+    account: ConnectionAccountOut | None
+    playlists: int
+    imported: int
+    #: importierte Playlists, die sich auf der Plattform seitdem geändert haben
+    changed: int
+    failed: int
+    active_jobs: int
+
+
+class AuthorizeOut(ApiModel):
+    authorize_url: str
+
+
+class DisconnectOut(ApiModel):
+    revoked: bool
+
+
+class RemotePlaylistOut(ApiModel):
+    id: uuid.UUID
+    platform: Platform
+    external_id: str
+    name: str
+    owner_name: str | None
+    description: str | None
+    track_count: int | None
+    url: str | None
+    owned: bool
+    items_accessible: bool
+    removed: bool
+    local_playlist_id: uuid.UUID | None
+    local_playlist_name: str | None
+    last_imported_at: datetime | None
+    last_import_status: RemoteImportStatus | None
+    last_import_run_id: uuid.UUID | None
+    last_error: str | None
+    #: importiert und seitdem auf der Plattform unverändert
+    up_to_date: bool
+
+
+class PlaylistsRefreshRequest(InputModel):
+    #: danach geänderte, bereits importierte Playlists erneut importieren
+    import_changed: bool = False
+
+
+class PlatformImportRequest(InputModel):
+    playlist_ids: Annotated[list[uuid.UUID], Field(min_length=1, max_length=200)]
+    #: auch unveränderte Playlists erneut lesen
+    force: bool = False
+
+
+class JobProgressOut(ApiModel):
+    current: int | None = None
+    total: int | None = None
+    message: str | None = None
+
+
+class JobOut(ApiModel):
+    id: uuid.UUID
+    kind: str
+    label: str
+    platform: Platform | None
+    remote_playlist_id: uuid.UUID | None
+    status: JobStatus
+    attempts: int
+    max_attempts: int
+    progress: JobProgressOut
+    result: dict[str, Any] | None
+    last_error: str | None
+    run_after: datetime
+    created_at: datetime
+    finished_at: datetime | None
 
 
 # --- Connectoren ---------------------------------------------------------------

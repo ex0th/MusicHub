@@ -129,6 +129,9 @@ jobs:
           # Matching: Scan über nginx, Zusammenfassung lesen
           curl -fsS -X POST -H "$AUTH" http://127.0.0.1:8080/api/v1/matching/scan | grep -q '"compared"'
           curl -fsS -H "$AUTH" http://127.0.0.1:8080/api/v1/matching/summary | grep -q '"auto_merge_ready"'
+          # Plattformen ohne Zugangsdaten: nicht eingerichtet, keine Tokens in der Antwort
+          curl -fsS -H "$AUTH" http://127.0.0.1:8080/api/v1/connections | grep -q '"configured":false'
+          test "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8080/api/oauth/callback/spotify?state=x&code=y')" = "303"
           for page in library/ playlists/ playlist/ track/ matching/ platforms/ settings/ import/ import/run/; do
             curl -fsS -o /dev/null "http://127.0.0.1:8080/$page"
           done

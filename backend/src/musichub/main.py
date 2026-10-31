@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from musichub.api.routes import (
+    connections,
     exports,
     health,
     imports,
@@ -79,6 +80,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(imports.router)
     app.include_router(exports.router)
     app.include_router(matching.router)
+    app.include_router(connections.router)
+    app.include_router(connections.oauth_router)
 
     if settings.app_env is AppEnv.PRODUCTION and settings.cors_origins == ["*"]:
         log.warning("CORS erlaubt alle Origins in production – bitte einschränken.")

@@ -15,7 +15,7 @@ PostgreSQL 17, Zugriff über SQLAlchemy 2 (synchron, psycopg 3), Migrationen mit
   (Links eines Tracks, Einträge einer Playlist). Ein Track in einer Playlist ist mit
   `RESTRICT` geschützt.
 
-## Schema (Revision `0004`)
+## Schema (Revision `0005`)
 
 ```
                 tags
@@ -34,6 +34,8 @@ jobs (eigenständig)
 import_runs 1───n import_items ──(SET NULL)──> tracks
 match_candidates (track_a_id, track_b_id) ──(CASCADE)──> tracks
 track_merges (kept_track_id, removed_track_id – ohne Fremdschlüssel)
+connector_accounts (eine Zeile je Plattform)    oauth_states (laufende Anmeldungen)
+remote_playlists ──(SET NULL)──> playlists, import_runs
 ```
 
 ### `tracks` – die lokale Sammlung
@@ -148,17 +150,42 @@ seine Quellen (mit Aktion `moved` | `moved_demoted` | `deleted_duplicate`), Tags
 umgehängte Playlist-Einträge und Importverweise, ergänzte Felder, gesicherte Vorschläge.
 Daraus stellt `library/merge.py::undo_merge` den Track mit derselben ID wieder her.
 
+### `connector_accounts` – verbundene Plattform-Konten
+
+Eine Zeile je Plattform (`platform` eindeutig): `external_user_id`, `display_name`,
+`scopes`, **verschlüsselt** `access_token_enc` und `refresh_token_enc` (Fernet, Schlüssel
+aus `MUSICHUB_TOKEN_ENCRYPTION_KEY`), `token_expires_at`, `status` (`connected` |
+`reauth_required`), `last_error`, `connected_by`, `connected_at`, `playlists_synced_at`,
+`last_import_at`. Klartext-Tokens stehen nirgends in der Datenbank.
+
+### `oauth_states` – laufende Anmeldungen
+
+`state_hash` (SHA-256 des `state`, eindeutig), `platform`, `code_verifier_enc`
+(verschlüsselter PKCE-Verifier), `created_by`, `created_at`, `expires_at` (10 Minuten).
+Einträge werden beim Rückruf gelöscht (einmalig), abgelaufene beim nächsten Start.
+
+### `remote_playlists` – Playlists der Plattformen
+
+Je Plattform-Playlist (`platform`, `external_id` eindeutig): `name`, `owner_name`,
+`description`, `track_count`, `url`, `owned`, `items_accessible` (Spotify Development Mode:
+nur eigene/kollaborative), `remote_version` (snapshot_id/ETag/last_modified), `seen_at`,
+`removed_at` (nicht mehr in der Liste), Importzustand `local_playlist_id` (→ `playlists`,
+SET NULL), `imported_version`, `last_imported_at`, `last_import_status` (`ok` |
+`unchanged` | `error`), `last_import_run_id` (→ `import_runs`, SET NULL), `last_error`.
+Gleiches `imported_version` und `remote_version` = seit dem Import unverändert.
+
+### `jobs` – Ergänzungen in `0005`
+
+`progress` (jsonb, `{current, total, message}`, Standard `{}`) – wird während des Laufs in
+eigener Transaktion geschrieben; `result` (jsonb) – Ergebnis erfolgreicher Jobs.
+
 ## Geplante Tabellen
 
 Werden erst angelegt, wenn die zugehörige Funktion gebaut wird (siehe ROADMAP):
 
 | Tabelle | Zweck | Wichtigste Spalten |
 |---|---|---|
-| `connector_accounts` | verbundenes Plattform-Konto je Nutzer | `platform`, `owner_subject`, `display_name`, verschlüsselte `access_token`/`refresh_token`, `expires_at`, `scopes`, `status` |
 | `sync_runs` | Historie je Synchronisation einer Playlist | `playlist_target_id`, `job_id`, `started_at`, `finished_at`, `status`, `added`, `removed`, `unresolved`, `error` |
-
-Tokens in `connector_accounts` werden mit einem Schlüssel aus der Umgebung verschlüsselt
-und nie im Klartext gespeichert oder geloggt.
 
 ## Migrationen
 
@@ -180,7 +207,7 @@ Regeln:
   Die CI prüft mit `alembic check`, dass nichts fehlt.
 - Generierte Migrationen immer lesen und nachbessern (Datenmigrationen, Defaults für
   neue Pflichtspalten, CHECK-Constraints).
-- Revisionen fortlaufend benennen (`0004_…`): `alembic revision --autogenerate --rev-id 0004 -m "…"`.
+- Revisionen fortlaufend benennen (`0005_…`): `alembic revision --autogenerate --rev-id 0005 -m "…"`.
 - Migrationen müssen auf einer Datenbank mit Bestandsdaten funktionieren und eine
   sinnvolle `downgrade()` haben. Beispiel: `0002` überführt `platform_links` mit allen
   Daten nach `track_sources` und normalisiert bestehende Playlist-Positionen.

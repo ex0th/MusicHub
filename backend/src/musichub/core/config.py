@@ -65,11 +65,22 @@ class Settings(BaseSettings):
     oidc_groups_claim: str = "groups"
 
     # --- Connectoren ---------------------------------------------------------
+    #: Öffentliche Basis-URL der Instanz (ohne Pfad), z. B. https://music.example.com.
+    #: Daraus entsteht die OAuth-Redirect-URI {public_url}/api/oauth/callback/{plattform}.
+    public_url: str | None = None
+    #: Schlüssel für die Verschlüsselung der OAuth-Tokens (Fernet, 32 Byte Base64).
+    #: Mehrere Schlüssel kommagetrennt: der erste verschlüsselt, alle entschlüsseln (Rotation).
+    token_encryption_key: SecretStr | None = None
     spotify_client_id: str | None = None
     spotify_client_secret: SecretStr | None = None
+    #: Google-OAuth-Client (Typ „Webanwendung“) für die YouTube Data API v3
+    youtube_client_id: str | None = None
+    youtube_client_secret: SecretStr | None = None
+    #: Nur mit eigener SoundCloud-API-App (setzt laut SoundCloud Artist Pro voraus)
     soundcloud_client_id: str | None = None
     soundcloud_client_secret: SecretStr | None = None
-    youtube_api_key: SecretStr | None = None
+    #: Zeitlimit je Plattform-Anfrage in Sekunden
+    connector_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
 
     # --- Import ---------------------------------------------------------------
     import_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1024, le=200 * 1024 * 1024)
@@ -78,6 +89,10 @@ class Settings(BaseSettings):
     # --- Hintergrundjobs -----------------------------------------------------
     worker_poll_interval_seconds: float = 2.0
     worker_max_attempts: int = 5
+
+    @property
+    def oauth_redirect_base(self) -> str | None:
+        return f"{self.public_url.rstrip('/')}/api/oauth/callback" if self.public_url else None
 
     @model_validator(mode="after")
     def _validate_auth(self) -> Settings:

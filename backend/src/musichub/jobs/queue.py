@@ -68,20 +68,51 @@ def claim_next(session: Session, worker_id: str) -> Job | None:
     return job
 
 
-def mark_succeeded(session: Session, job_id: uuid.UUID) -> None:
+def mark_succeeded(
+    session: Session, job_id: uuid.UUID, result: dict[str, Any] | None = None
+) -> None:
     session.execute(
         update(Job)
         .where(Job.id == job_id)
         .values(
-            status=JobStatus.SUCCEEDED.value, finished_at=_now(), locked_at=None, last_error=None
+            status=JobStatus.SUCCEEDED.value,
+            finished_at=_now(),
+            locked_at=None,
+            last_error=None,
+            result=result or None,
         )
     )
 
 
-def mark_failed(session: Session, job: Job, error: str, *, retryable: bool) -> None:
-    """Exponentielles Backoff (30 s, 1 min, 2 min … max. 1 h) oder endgültig ``dead``."""
+def set_progress(
+    session: Session, job_id: uuid.UUID, current: int, total: int | None, message: str | None
+) -> None:
+    session.execute(
+        update(Job)
+        .where(Job.id == job_id)
+        .values(progress={"current": current, "total": total, "message": message})
+    )
+
+
+#: Längste Wartezeit, die ein Rate-Limit erzwingen darf (YouTube: bis Mitternacht PT)
+MAX_RETRY_AFTER = 26 * 3600
+
+
+def mark_failed(
+    session: Session,
+    job: Job,
+    error: str,
+    *,
+    retryable: bool,
+    retry_after: float | None = None,
+) -> None:
+    """Exponentielles Backoff (30 s, 1 min, 2 min … max. 1 h) oder endgültig ``dead``.
+
+    ``retry_after`` (z. B. aus ``Retry-After`` einer Plattform) ersetzt das Backoff."""
     if retryable and job.attempts < job.max_attempts:
         delay = min(30 * 2 ** (job.attempts - 1), 3600)
+        if retry_after is not None:
+            delay = min(max(retry_after, 1), MAX_RETRY_AFTER)
         values: dict[str, Any] = {
             "status": JobStatus.FAILED.value,
             "run_after": _now() + timedelta(seconds=delay),
