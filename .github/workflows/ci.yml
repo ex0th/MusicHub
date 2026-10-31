@@ -121,7 +121,14 @@ jobs:
           docker compose ps
       - name: Logs bei Fehler
         if: failure()
-        run: docker compose logs --no-color
+        run: |
+          docker compose ps -a
+          docker compose logs --no-color
+          # Zusätzlich als Annotation, damit die Ursache direkt im Run sichtbar ist
+          for svc in backend worker frontend db; do
+            msg=$(docker compose logs --no-color --tail 40 "$svc" 2>&1 | tail -c 3500 | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')
+            echo "::error title=Logs ${svc}::${msg}"
+          done
 
       # 3) Multi-Arch veröffentlichen (nur main und Versionstags)
       - name: Bei GHCR anmelden
