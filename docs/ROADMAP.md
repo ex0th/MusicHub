@@ -28,7 +28,7 @@ Etappen bauen aufeinander auf. Jede Etappe endet mit grüner CI und einem lauff�
   Plattformen, Einstellungen (Anmeldung, Farbschema, Tags); dunkel als Standard
 - Vollständig ohne externe APIs nutzbar
 
-## ✅ Etappe 2a – Import und Export (dieser Stand)
+## ✅ Etappe 2a – Import und Export
 
 - Import-Assistent: hochladen, Format erkennen, Vorschau, Abgleich, Entscheidungen, bestätigen
 - Adapter: TuneMyMusic-, Soundiiz-, Exportify- und allgemeines CSV, JSON, TXT-Tracklisten,
@@ -37,6 +37,19 @@ Etappen bauen aufeinander auf. Jede Etappe endet mit grüner CI und einem lauff�
   und Ähnlichkeit; wiederholte Imports erzeugen keine Duplikate
 - Importprotokoll (`import_runs`, `import_items`), Bericht als CSV/JSON
 - Export der Bibliothek und einzelner Playlists als CSV/JSON, gegen Formula-Injection gesichert
+
+## ✅ Etappe 2c – Track-Matching (dieser Stand)
+
+- Mehrstufige Engine: Normalisierung, Versionserkennung (Remix, VIP, Bootleg, Edit, Extended,
+  Live, Cover …) mit Bearbeiter, Featuring, „Artist - Titel“-Lesart, ISRC, Dauer,
+  Veröffentlichung, Plattform-Metadaten; Confidence 0–100 mit Gründen, vier Stufen
+- Konservative Automatik: nur „sicher“ mit hartem Beleg und ohne Blocker, vorher neu geprüft
+- Vorschläge (`match_candidates`), Ablehnungen werden gemerkt; Scan per API und als Job nach
+  jedem Import
+- Zusammenführen ohne Datenverlust (Quellen, Tags, Playlist-Positionen, Importprotokoll) und
+  vollständig rückgängig (`track_merges`)
+- Bereich „Matching“: Gegenüberstellung, Gründe, Bestätigen/Ablehnen/Später prüfen, Verlauf,
+  manueller Vergleich
 
 ## Etappe 2b – Bibliothek ausbauen
 
@@ -64,7 +77,8 @@ Etappen bauen aufeinander auf. Jede Etappe endet mit grüner CI und einem lauff�
 
 ## Etappe 5 – Matching und Sync produktiv
 
-- Job `matching.find_candidates`: Kandidaten je Track und Plattform, UI zum Bestätigen/Ablehnen
+- Job `matching.find_candidates`: Plattform-Tracks (Connector-Suche) je lokalem Track mit
+  derselben Engine bewerten, `candidate`-Links zum Bestätigen/Ablehnen
 - Job `sync.playlist` pro Ziel und Plattform, Ausführung des `SyncPlan`, Historie in `sync_runs`
 - Geplante Syncs (Zeitplan je Playlist), Anzeige von Sync-Historie und Fehlern
 - Verfügbarkeitsprüfung bestehender Links (`unavailable`)
@@ -96,3 +110,7 @@ Etappen bauen aufeinander auf. Jede Etappe endet mit grüner CI und einem lauff�
 - Import läuft synchron in der Anfrage (bis 20 000 Datensätze); Soundiiz-Exportlayout nur
   aus der Soundiiz-Hilfe abgeleitet, TuneMyMusic aus Drittquellen (siehe IMPORT_EXPORT.md).
 - SoundCloud-IDs aus Fremdexporten (numerisch) werden noch nicht übernommen.
+- Matching-Scan läuft synchron in der Anfrage (≈ 2 s je 10 000 Tracks); nach Importen
+  zusätzlich als Job. Ketten (A = B, B = C) werden schrittweise über erneute Scans erkannt.
+- Rückgängig ist nur in umgekehrter Reihenfolge möglich, wenn der behaltene Track später
+  selbst zusammengeführt wurde.

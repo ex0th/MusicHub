@@ -13,56 +13,28 @@ Matching-Engine ähnliche Tracks desselben Artists; ab ``POTENTIAL_THRESHOLD`` w
 
 from __future__ import annotations
 
-import re
-import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass, field
 
+from musichub.domain.types import MatchLevel
 from musichub.matching.engine import (
-    AUTO_LINK_THRESHOLD,
-    TrackFingerprint,
+    TrackFacts,
+    compare,
+    identity_key,
     normalize_artists,
-    normalize_title,
-    score,
-    version_markers,
+    version_of,
 )
 from musichub.transfer.records import ImportRecord
 
-POTENTIAL_THRESHOLD = 0.75
-#: Ab hier schlägt der Assistent „vorhandenen Track verwenden“ vor
-SUGGEST_EXISTING_THRESHOLD = AUTO_LINK_THRESHOLD
-
-_NEUTRAL_VERSIONS = {"", "original", "original mix", "original version", "album version"}
-_BRACKET = re.compile(r"[\(\[]([^\)\]]+)[\)\]]")
-
-
-def _fold(value: str) -> str:
-    value = unicodedata.normalize("NFKD", value.casefold())
-    value = "".join(c for c in value if not unicodedata.combining(c))
-    return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", value)).strip()
+#: Ab „Prüfung“ (Confidence ≥ 60) wird ein mögliches Duplikat gemeldet,
+#: ab „wahrscheinlich“ (≥ 85) schlägt der Assistent „vorhandenen Track verwenden“ vor.
+POTENTIAL_THRESHOLD = 0.60
+SUGGEST_EXISTING_THRESHOLD = 0.85
 
 
 def normalized_version(title: str, version: str | None) -> str:
-    """Version aus dem Versionsfeld oder – falls leer – aus Klammern/„ - “ im Titel."""
-    candidates = [version] if version else []
-    if not version:
-        candidates += _BRACKET.findall(title)
-        if " - " in title:
-            candidates.append(title.split(" - ", 1)[1])
-    for candidate in candidates:
-        if not candidate:
-            continue
-        folded = _fold(candidate)
-        if folded in _NEUTRAL_VERSIONS:
-            return ""
-        if version or version_markers(candidate):
-            return folded
-    return ""
-
-
-def identity_key(title: str, artist: str, version: str | None) -> str:
-    artists = "/".join(sorted(normalize_artists(artist)))
-    return f"{normalize_title(title)}|{artists}|{normalized_version(title, version)}"
+    """Versionsschlüssel aus Versionsfeld bzw. Titel; leer = Original."""
+    return version_of(title, version).key
 
 
 @dataclass(slots=True)
@@ -82,13 +54,6 @@ class Match:
     track_id: str
     reason: str  # musichub_id | source | isrc | metadata | similar
     score: float
-
-
-def _fingerprint(
-    title: str, artist: str, version: str | None, duration: int | None, isrc: str | None
-) -> TrackFingerprint:
-    full = f"{title} ({version})" if version else title
-    return TrackFingerprint(title=full, artist=artist, duration_ms=duration, isrc=isrc)
 
 
 def record_source_keys(record: ImportRecord) -> list[str]:
@@ -140,13 +105,28 @@ class LibraryIndex:
                 candidates[track.id] = track
         if not candidates:
             return None
-        local = _fingerprint(record.title, record.artist, record.version, record.duration_ms, None)
+        local = TrackFacts(
+            title=record.title,
+            artist=record.artist,
+            version=record.version,
+            duration_ms=record.duration_ms,
+            isrc=record.isrc,
+        )
         best: Match | None = None
         for track in candidates.values():
-            other = _fingerprint(track.title, track.artist, track.version, track.duration_ms, None)
-            result = score(local, other)
-            if result.score >= POTENTIAL_THRESHOLD and (best is None or result.score > best.score):
-                best = Match(track.id, "similar", result.score)
+            other = TrackFacts(
+                title=track.title,
+                artist=track.artist,
+                version=track.version,
+                duration_ms=track.duration_ms,
+                isrc=track.isrc,
+            )
+            result = compare(local, other)
+            if result.level is MatchLevel.DIFFERENT:
+                continue
+            value = result.confidence / 100
+            if best is None or value > best.score:
+                best = Match(track.id, "similar", value)
         return best
 
 

@@ -35,6 +35,12 @@ Instanz**, Playlists werden von dort nach Spotify, SoundCloud und YouTube synchr
 12. **CSV-Ausgaben immer über `transfer/export.py::to_csv`** (Formula-Injection-Schutz).
 13. **Import schreibt nur im Commit** – Analyse und Vorschau ändern die Bibliothek nie;
     vorhandene Tracks werden nur ergänzt, nie überschrieben (lokal führt).
+14. **Tracks nur über `library/merge.py` zusammenführen.** Jede Zusammenführung wird in
+    `track_merges` mit Snapshot protokolliert und muss rückgängig zu machen sein. Titel und
+    Artist des behaltenen Tracks nie überschreiben, Playlist-Positionen nie ändern.
+15. **Automatisch nur `certain` ohne Blocker** (`MatchAssessment.auto_merge_allowed`).
+    Neue Matching-Regeln zuerst als Testfall (`MUST_NOT_AUTO_MERGE`) und `ENGINE_VERSION`
+    erhöhen; abgelehnte Paare (`match_candidates.status = rejected`) nie überschreiben.
 
 ## Struktur
 
@@ -48,22 +54,26 @@ backend/
     domain/            types.py (Platform, LinkStatus, Availability, MatchMethod, JobStatus),
                        platform_urls.py (Links erkennen/erzeugen, ohne Netzwerk)
     db/                Engine/Session, Basis-Modell, Migrations-Status, migrate (Advisory-Lock)
-    models/            SQLAlchemy-Modelle (library.py, job.py) – in models/__init__ exportieren
-    migrations/        Alembic (env.py, versions/0001_…, 0002_bibliothek, 0003_importprotokoll)
-    api/               schemas.py (Pydantic), routes/ (health, system, tracks, playlists, tags)
-    library/           Fachlogik: tracks, sources, tags, playlists, stats, queries
+    models/            SQLAlchemy-Modelle (library.py, imports.py, matching.py, job.py) –
+                       in models/__init__ exportieren
+    migrations/        Alembic (env.py, versions/0001_…, 0002_bibliothek, 0003_importprotokoll,
+                       0004_matching)
+    api/               schemas.py (Pydantic), routes/ (health, system, tracks, playlists, tags,
+                       imports, exports, matching)
+    library/           Fachlogik: tracks, sources, tags, playlists, stats, queries,
+                       matching (Scan, Vorschläge), merge (Zusammenführen, Rückgängig)
     transfer/          Import/Export: decoding, records, formats/ (Adapter), matching,
                        service (Analyse, Commit, Bericht), export
     connectors/        base.py (Schnittstelle, DTOs, Fehler), platforms.py, registry.py
-    matching/engine.py Score-Berechnung
+    matching/          engine.py (parse/compare, Confidence, Stufen), blocking.py (rein)
     sync/engine.py     plan_playlist_sync
     jobs/              queue.py, handlers.py (@handler), worker.py
   tests/               pytest; DB-Tests mit @pytest.mark.db
 frontend/
   src/lib/             api.ts (Client), types.ts, auth.ts, session.ts, ui.ts (h(), Toast,
-                       Dialog, Abdeckungsstreifen), platforms.ts, forms.ts
+                       Dialog, Abdeckungsstreifen), platforms.ts, forms.ts, matching.ts
   src/pages/           index (Dashboard), library/, track/?id=, playlists/, playlist/?id=,
-                       platforms/, settings/, import/, import/run/?id=
+                       matching/, platforms/, settings/, import/, import/run/?id=
   src/layouts/         Base.astro (Navigation)
   src/components/      TrackForm.astro
   src/styles/          global.css (Tokens, Komponenten-Styles)
@@ -72,7 +82,7 @@ frontend/
 compose.yaml           Betrieb/Arcane (GHCR-Images)
 compose.dev.yaml       Entwicklung (Build, Hot Reload)
 .github/workflows/ci.yml
-docs/                  ARCHITECTURE, DATABASE, API, ROADMAP, IMPORT_EXPORT
+docs/                  ARCHITECTURE, DATABASE, API, ROADMAP, IMPORT_EXPORT, MATCHING
 examples/import/       Beispieldateien je Importformat (auch Testdaten)
 ```
 

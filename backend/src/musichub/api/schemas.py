@@ -21,12 +21,16 @@ from musichub.connectors.base import Capability
 from musichub.connectors.registry import ConnectorState
 from musichub.domain.types import (
     Availability,
+    CandidateStatus,
     ImportDecision,
     ImportItemStatus,
     ImportResult,
     ImportStatus,
     LinkStatus,
+    MatchLevel,
     MatchMethod,
+    MergeMethod,
+    MergeStatus,
     Platform,
     PlaylistImportMode,
 )
@@ -479,6 +483,119 @@ class ImportUnassignedUpdate(InputModel):
 class ImportOptionsUpdate(InputModel):
     playlists: Annotated[list[ImportPlaylistMode], Field(max_length=1000)] = []
     unassigned: ImportUnassignedUpdate | None = None
+
+
+# --- Matching ------------------------------------------------------------------
+
+
+class MatchReasonOut(ApiModel):
+    code: str
+    text: str
+    #: Punkte (plus/minus), bei ``cap`` die Obergrenze, bei ``info``/``block`` 0
+    effect: int
+    kind: Literal["plus", "minus", "info", "cap", "block"]
+
+
+class MatchTrackOut(TrackOut):
+    playlist_count: int
+    #: von der Engine erkannte Version (aus Versionsfeld und Titel), z. B. „Remix (kaskade)“
+    detected_version: str
+
+
+class MatchCandidateOut(ApiModel):
+    id: uuid.UUID
+    status: CandidateStatus
+    confidence: int
+    level: MatchLevel
+    reasons: list[MatchReasonOut]
+    blockers: list[str]
+    #: automatische Zusammenführung zulässig (sicher und ohne Blocker)
+    auto_merge_allowed: bool
+    engine_version: str
+    decided_at: datetime | None
+    decided_by: str | None
+    created_at: datetime
+    updated_at: datetime
+    #: neuerer Track („Quelltrack“)
+    source: MatchTrackOut
+    #: älterer, etablierter Track („Vorgeschlagener Track“)
+    suggested: MatchTrackOut
+
+
+class MatchSummaryOut(ApiModel):
+    statuses: dict[str, int]
+    open_levels: dict[str, int]
+    auto_merge_ready: int
+    merges: int
+    last_change: datetime | None
+
+
+class MatchScanOut(ApiModel):
+    tracks: int
+    unmatchable: int
+    compared: int
+    created: int
+    updated: int
+    removed: int
+    levels: dict[str, int]
+
+
+class MatchConfirm(InputModel):
+    #: welcher Track bleibt: der vorgeschlagene (Standard) oder der Quelltrack
+    keep: Literal["suggested", "source"] = "suggested"
+
+
+class MatchCompareRequest(InputModel):
+    track_a_id: uuid.UUID
+    track_b_id: uuid.UUID
+
+
+class MatchCompareOut(ApiModel):
+    confidence: int
+    level: MatchLevel
+    reasons: list[MatchReasonOut]
+    blockers: list[str]
+    auto_merge_allowed: bool
+    version_a: str
+    version_b: str
+    duration_diff_ms: int | None
+    isrc_match: bool | None
+    candidate_id: uuid.UUID | None
+    candidate_status: CandidateStatus | None
+    track_a: MatchTrackOut
+    track_b: MatchTrackOut
+
+
+class MergeRequest(InputModel):
+    keep_track_id: uuid.UUID
+    merge_track_id: uuid.UUID
+
+
+class MergeOut(ApiModel):
+    id: uuid.UUID
+    kept_track_id: uuid.UUID
+    removed_track_id: uuid.UUID
+    kept_title: str
+    kept_artist: str
+    removed_title: str
+    removed_artist: str
+    method: MergeMethod
+    confidence: int | None
+    level: MatchLevel | None
+    status: MergeStatus
+    created_by: str
+    created_at: datetime
+    undone_at: datetime | None
+    undone_by: str | None
+    #: Kurzfassung der Änderungen (Anzahl verschobener Quellen, Playlist-Einträge …)
+    changes: dict[str, int]
+    #: beim behaltenen Track ergänzte Felder
+    filled_fields: list[str]
+
+
+class AutoMergeOut(ApiModel):
+    merged: list[MergeOut]
+    skipped: int
 
 
 # --- Connectoren ---------------------------------------------------------------

@@ -48,7 +48,8 @@ import Base from "../../layouts/Base.astro";
           </form>
         </section>
 
-        <section>
+        <section class="actions">
+          <a class="button ghost" id="compare-link" href="/matching/?tab=compare">Duplikat prüfen</a>
           <button type="button" class="danger" id="delete">Track löschen</button>
         </section>
       </div>
@@ -76,6 +77,9 @@ import Base from "../../layouts/Base.astro";
 
   const { api, tokens } = createSession();
   const id = param("id") ?? "";
+  document
+    .getElementById("compare-link")
+    ?.setAttribute("href", `/matching/?tab=compare&a=${encodeURIComponent(id)}`);
   const form = $<HTMLFormElement>("#track-form");
   let track: TrackDetail;
   let allTags: TagWithCount[] = [];

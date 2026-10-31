@@ -42,11 +42,11 @@
 |---|---|---|---|---|
 | 1 | Frontend | `frontend/` | UI, ruft nur die REST-API auf | API (HTTP) |
 | 2 | Backend/API | `musichub.api`, `musichub.main` | HTTP, Validierung, Auth, Transaktionen | alle Backend-Pakete |
-| 2a | Bibliothek | `musichub.library` | Fachlogik: Tracks, Quellen, Tags, Playlists, Statistik | `models`, `domain`, `core` |
+| 2a | Bibliothek | `musichub.library` | Fachlogik: Tracks, Quellen, Tags, Playlists, Statistik, Matching-Vorschläge, Zusammenführen/Rückgängig | `models`, `matching`, `domain`, `core` |
 | 2b | Import/Export | `musichub.transfer` | Dateiprüfung, Format-Adapter, Abgleich, Importlauf, Export | `library`, `matching`, `models`, `domain` |
 | 3 | Datenbank | `musichub.models`, `musichub.db`, `musichub/migrations` | Schema, Sessions, Migrationen | `domain` |
 | 4 | Connectoren | `musichub.connectors` | Plattform-APIs, liefern neutrale DTOs | `domain`, `core` – **nicht** `db` |
-| 5 | Matching-Engine | `musichub.matching` | Track-Ähnlichkeit bewerten | `domain` |
+| 5 | Matching-Engine | `musichub.matching` | Gleiche Aufnahme/Version erkennen, Kandidatensuche (rein) | `domain` |
 | 6 | Synchronisations-Engine | `musichub.sync` | Soll/Ist-Abgleich planen | `domain` |
 | 7 | Hintergrundjobs | `musichub.jobs` | Queue, Worker, Job-Handler | alle außer `api` |
 
@@ -111,16 +111,19 @@ Adapter kennen weder Datenbank noch Bibliothek; sie übersetzen nur Dateien in d
 
 ## Matching
 
-`matching/engine.py` bewertet lokal ↔ Plattform:
+Details, Score-Tabelle und Regeln: [MATCHING.md](MATCHING.md).
 
-1. Gleiche ISRC → Score 1.0 (`isrc`).
-2. Sonst Fuzzy-Score: Titel 50 %, Interpret 35 %, Dauer 15 % (fehlt die Dauer, wird
-   neu gewichtet). Titel werden normalisiert (Akzente, „feat.“, „(Official Video)“,
-   „Artist - Title“ von YouTube, „- Topic“-Kanäle).
-3. Unterschiedliche Versions-Marker (Remix, Live, Acoustic …) → Score × 0.6. Ein Remix wird
-   so nie automatisch als Original verknüpft.
+```
+matching/engine.py   parse() + compare() → Confidence 0–100, Stufe, Gründe, Blocker   (rein)
+matching/blocking.py Kandidatenpaare über ISRC / Titel / Artist+Titelanfang          (rein)
+library/matching.py  Scan → match_candidates, Entscheidungen, automatische Zusammenführung
+library/merge.py     Zusammenführen + Rückgängig über Snapshot in track_merges
+```
 
-Ab 0.92 darf automatisch verknüpft werden, ab 0.6 wird ein `candidate`-Link vorgeschlagen.
+Stufen: `certain` (≥ 95 und harter Beleg, ohne Blocker – nur diese dürfen automatisch
+zusammengeführt werden), `likely` (85–94), `review` (60–84), `different` (< 60). Abweichende
+Versionen setzen eine Obergrenze, die kein Bonus aufhebt. Der Import nutzt dieselbe Engine
+für „mögliche Duplikate“ und plant nach dem Commit den Job `matching.scan` ein.
 
 ## Synchronisation
 

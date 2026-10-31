@@ -50,3 +50,12 @@ def handler(kind: str) -> Callable[[Handler], Handler]:
 def ping(ctx: JobContext) -> None:
     """Diagnose-Job: prüft, dass Worker und Queue funktionieren."""
     log.info("Pong", extra={"payload": ctx.payload})
+
+
+@handler("matching.scan")
+def matching_scan(ctx: JobContext) -> None:
+    """Matching-Vorschläge aktualisieren (z. B. nach einem Import). Idempotent."""
+    from musichub.library.matching import scan
+
+    result = scan(ctx.session)
+    log.info("Matching-Vorschläge aktualisiert", extra={"new_candidates": result.created})

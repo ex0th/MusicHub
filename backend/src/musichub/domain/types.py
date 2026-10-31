@@ -90,6 +90,37 @@ class PlaylistImportMode(StrEnum):
     SKIP = "skip"
 
 
+class MatchLevel(StrEnum):
+    """Einstufung zweier lokaler Tracks durch die Matching-Engine."""
+
+    #: sicher identisch – nur diese Stufe darf (ohne Blocker) automatisch zusammengeführt werden
+    CERTAIN = "certain"
+    #: wahrscheinlich identisch – Bestätigung durch den Nutzer nötig
+    LIKELY = "likely"
+    #: manuelle Prüfung notwendig
+    REVIEW = "review"
+    #: unterschiedliche Tracks – wird nicht vorgeschlagen
+    DIFFERENT = "different"
+
+
+class CandidateStatus(StrEnum):
+    OPEN = "open"
+    #: „Später prüfen“
+    DEFERRED = "deferred"
+    #: abgelehnt – wird bei neuen Scans nicht erneut vorgeschlagen
+    REJECTED = "rejected"
+
+
+class MergeMethod(StrEnum):
+    MANUAL = "manual"
+    AUTO = "auto"
+
+
+class MergeStatus(StrEnum):
+    MERGED = "merged"
+    UNDONE = "undone"
+
+
 def sql_in(enum: type[StrEnum]) -> str:
     """Hilfsfunktion für CHECK-Constraints: "'a', 'b', 'c'"."""
     return ", ".join(f"'{m.value}'" for m in enum)

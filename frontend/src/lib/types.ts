@@ -284,3 +284,101 @@ export interface ImportItem {
   result_track_id: string | null;
   result_message: string | null;
 }
+
+// --- Matching --------------------------------------------------------------------
+
+export type MatchLevel = "certain" | "likely" | "review" | "different";
+export type CandidateStatus = "open" | "deferred" | "rejected";
+
+export interface MatchReason {
+  code: string;
+  text: string;
+  /** Punkte (plus/minus), bei „cap“ die Obergrenze, sonst 0 */
+  effect: number;
+  kind: "plus" | "minus" | "info" | "cap" | "block";
+}
+
+export interface MatchTrack extends Track {
+  playlist_count: number;
+  /** von der Engine erkannte Version, z. B. „Original“ oder „Remix (kaskade)“ */
+  detected_version: string;
+}
+
+export interface MatchCandidate {
+  id: string;
+  status: CandidateStatus;
+  confidence: number;
+  level: MatchLevel;
+  reasons: MatchReason[];
+  blockers: string[];
+  auto_merge_allowed: boolean;
+  engine_version: string;
+  decided_at: string | null;
+  decided_by: string | null;
+  created_at: string;
+  updated_at: string;
+  /** neuerer Track */
+  source: MatchTrack;
+  /** älterer, etablierter Track */
+  suggested: MatchTrack;
+}
+
+export interface MatchSummary {
+  statuses: Record<CandidateStatus, number>;
+  open_levels: Record<Exclude<MatchLevel, "different">, number>;
+  auto_merge_ready: number;
+  merges: number;
+  last_change: string | null;
+}
+
+export interface MatchScanResult {
+  tracks: number;
+  unmatchable: number;
+  compared: number;
+  created: number;
+  updated: number;
+  removed: number;
+  levels: Partial<Record<MatchLevel, number>>;
+}
+
+export interface MatchComparison {
+  confidence: number;
+  level: MatchLevel;
+  reasons: MatchReason[];
+  blockers: string[];
+  auto_merge_allowed: boolean;
+  version_a: string;
+  version_b: string;
+  duration_diff_ms: number | null;
+  isrc_match: boolean | null;
+  candidate_id: string | null;
+  candidate_status: CandidateStatus | null;
+  track_a: MatchTrack;
+  track_b: MatchTrack;
+}
+
+export interface TrackMerge {
+  id: string;
+  kept_track_id: string;
+  removed_track_id: string;
+  kept_title: string;
+  kept_artist: string;
+  removed_title: string;
+  removed_artist: string;
+  method: "manual" | "auto";
+  confidence: number | null;
+  level: MatchLevel | null;
+  status: "merged" | "undone";
+  created_by: string;
+  created_at: string;
+  undone_at: string | null;
+  undone_by: string | null;
+  changes: {
+    sources: number;
+    sources_demoted: number;
+    playlist_items: number;
+    tags_added: number;
+    import_items: number;
+  };
+  filled_fields: string[];
+}

@@ -1,0 +1,1096 @@
+---
+import Base from "../../layouts/Base.astro";
+---
+
+<Base title="Matching" section="matching">
+  <div class="page-head">
+    <div>
+      <h1>Matching</h1>
+      <p class="lede">
+        Findet Tracks, die mehrfach in deiner Bibliothek stehen – etwa weil sie einzeln von
+        Spotify, SoundCloud und YouTube kamen. Remixes, Edits, Live- und andere Versionen werden
+        nie automatisch zusammengeführt.
+      </p>
+    </div>
+    <div class="actions">
+      <button type="button" class="ghost" id="auto-merge" disabled>Sichere zusammenführen</button>
+      <button type="button" id="scan">Vorschläge aktualisieren</button>
+    </div>
+  </div>
+
+  <div id="content">
+    <div class="m-tabs" role="group" aria-label="Ansicht">
+      <button type="button" class="m-tab" data-tab="open" aria-pressed="true">Offen <span class="m-count" data-count="open"></span></button>
+      <button type="button" class="m-tab" data-tab="deferred" aria-pressed="false">Später prüfen <span class="m-count" data-count="deferred"></span></button>
+      <button type="button" class="m-tab" data-tab="rejected" aria-pressed="false">Abgelehnt <span class="m-count" data-count="rejected"></span></button>
+      <button type="button" class="m-tab" data-tab="history" aria-pressed="false">Verlauf <span class="m-count" data-count="history"></span></button>
+      <button type="button" class="m-tab" data-tab="compare" aria-pressed="false">Manuell vergleichen</button>
+    </div>
+
+    <div class="chips m-levels" id="levels" role="group" aria-label="Stufe">
+      <button type="button" class="chip" data-level="" aria-pressed="true">Alle</button>
+      <button type="button" class="chip" data-level="certain" aria-pressed="false">Sicher <span class="cat" data-level-count="certain"></span></button>
+      <button type="button" class="chip" data-level="likely" aria-pressed="false">Wahrscheinlich <span class="cat" data-level-count="likely"></span></button>
+      <button type="button" class="chip" data-level="review" aria-pressed="false">Prüfen <span class="cat" data-level-count="review"></span></button>
+    </div>
+
+    <div id="list" class="m-list" aria-live="polite"></div>
+    <div class="pager" id="pager" hidden>
+      <span id="pager-info"></span>
+      <button type="button" class="ghost" id="more">Mehr laden</button>
+    </div>
+
+    <section id="compare" class="m-compare" hidden aria-labelledby="compare-title">
+      <h2 id="compare-title" class="visually-hidden">Zwei Tracks vergleichen</h2>
+      <p class="muted">
+        Wähle zwei Tracks, um sie zu vergleichen. Du kannst sie danach zusammenführen oder als
+        unterschiedlich markieren – auch wenn die Engine sie nicht vorgeschlagen hat.
+      </p>
+      <div class="m-pickers">
+        <div class="m-picker" data-slot="a">
+          <label class="field">Track A <input type="search" placeholder="Titel oder Artist suchen" autocomplete="off" /></label>
+          <div class="m-picked"></div>
+          <ul class="m-results plain"></ul>
+        </div>
+        <div class="m-picker" data-slot="b">
+          <label class="field">Track B <input type="search" placeholder="Titel oder Artist suchen" autocomplete="off" /></label>
+          <div class="m-picked"></div>
+          <ul class="m-results plain"></ul>
+        </div>
+      </div>
+      <div id="compare-result"></div>
+    </section>
+  </div>
+</Base>
+
+<script>
+  import { formatDuration } from "../../lib/api";
+  import {
+    LEVEL_LABEL,
+    LEVEL_SHORT,
+    blockerTexts,
+    differingFacts,
+    mergeChanges,
+    reasonEffect,
+    sortReasons,
+    trackFacts,
+    versionText,
+  } from "../../lib/matching";
+  import { createSession, requireLogin } from "../../lib/session";
+  import type {
+    CandidateStatus,
+    MatchCandidate,
+    MatchComparison,
+    MatchLevel,
+    MatchReason,
+    MatchSummary,
+    MatchTrack,
+    Track,
+    TrackMerge,
+  } from "../../lib/types";
+  import {
+    $,
+    confirmDialog,
+    coverageStrip,
+    errorMessage,
+    formatDateTime,
+    h,
+    param,
+    plural,
+    toast,
+  } from "../../lib/ui";
+
+  type Tab = CandidateStatus | "history" | "compare";
+  const VERDICT_HINT: Record<MatchLevel, string> = {
+    certain: "Darf automatisch zusammengeführt werden",
+    likely: "Braucht deine Bestätigung",
+    review: "Bitte genau prüfen",
+    different: "Wird nicht vorgeschlagen – nur bewusst zusammenführen",
+  };
+  const PAGE = 20;
+
+  const { api, tokens } = createSession();
+  const content = $("#content");
+  const list = $("#list");
+  const pager = $("#pager");
+  const scanButton = $<HTMLButtonElement>("#scan");
+  const autoButton = $<HTMLButtonElement>("#auto-merge");
+
+  let tab: Tab = "open";
+  let level: MatchLevel | "" = "";
+  let offset = 0;
+  let total = 0;
+  let summary: MatchSummary | null = null;
+
+  // --- Rückmeldung mit „Rückgängig“ ---------------------------------------------------
+
+  function undoToast(message: string, merge: TrackMerge): void {
+    const region = document.getElementById("toasts");
+    if (!region) return;
+    const button = h("button", { type: "button", class: "quiet" }, "Rückgängig");
+    const item = h("div", { class: "toast toast-ok m-toast", role: "status" }, h("span", {}, message), button);
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        await api.undoMerge(merge.id);
+        toast("Zusammenführung rückgängig gemacht.");
+        item.remove();
+        await refresh();
+      } catch (e) {
+        toast(errorMessage(e), "error");
+        button.disabled = false;
+      }
+    });
+    region.append(item);
+    window.setTimeout(() => item.remove(), 10_000);
+  }
+
+  // --- Bausteine ---------------------------------------------------------------------
+
+  function scoreBlock(confidence: number, lvl: MatchLevel): HTMLElement {
+    return h(
+      "div",
+      { class: "m-score", "data-level": lvl },
+      h("span", { class: "m-num" }, confidence),
+      h("span", { class: "m-of" }, "/100"),
+      h(
+        "span",
+        { class: "m-bar", role: "img", "aria-label": `Confidence ${confidence} von 100` },
+        h("span", { style: `width:${Math.max(2, confidence)}%` }),
+      ),
+    );
+  }
+
+  function reasonList(reasons: MatchReason[]): HTMLElement {
+    const ul = h("ul", { class: "m-reasons plain" });
+    for (const reason of sortReasons(reasons)) {
+      ul.append(
+        h(
+          "li",
+          { "data-kind": reason.kind },
+          h("span", { class: "m-effect" }, reasonEffect(reason)),
+          h("span", {}, reason.text),
+        ),
+      );
+    }
+    return ul;
+  }
+
+  function trackColumn(label: string, track: MatchTrack, diff: Set<string>): HTMLElement {
+    const dl = h("dl", { class: "m-facts" });
+    for (const row of trackFacts(track)) {
+      if (row.key === "version") continue;
+      dl.append(
+        h("dt", { class: diff.has(row.key) ? "m-diff" : null }, row.label),
+        h("dd", { class: diff.has(row.key) ? "m-diff" : null }, row.value),
+      );
+    }
+    return h(
+      "div",
+      { class: "m-track" },
+      h("p", { class: "m-label" }, label),
+      h("a", { class: "m-title", href: `/track/?id=${encodeURIComponent(track.id)}` }, track.title),
+      h("p", { class: "m-artist" }, track.artist),
+      h(
+        "p",
+        { class: diff.has("version") ? "m-version m-diff" : "m-version" },
+        versionText(track),
+      ),
+      coverageStrip(track),
+      dl,
+    );
+  }
+
+  function pairCard(options: {
+    confidence: number;
+    level: MatchLevel;
+    reasons: MatchReason[];
+    left: [string, MatchTrack];
+    right: [string, MatchTrack];
+    note?: string;
+    actions: HTMLElement[];
+  }): HTMLElement {
+    const [leftLabel, leftTrack] = options.left;
+    const [rightLabel, rightTrack] = options.right;
+    const diff = differingFacts(leftTrack, rightTrack);
+    const blockers = blockerTexts(options.reasons);
+    return h(
+      "article",
+      { class: "m-card panel", "data-level": options.level },
+      h(
+        "header",
+        { class: "m-head" },
+        scoreBlock(options.confidence, options.level),
+        h(
+          "div",
+          { class: "m-verdict" },
+          h("strong", {}, LEVEL_LABEL[options.level]),
+          blockers.length
+            ? h("span", { class: "m-blocked" }, `Nicht automatisch: ${blockers.join(" · ")}`)
+            : h("span", { class: "muted" }, VERDICT_HINT[options.level]),
+          options.note ? h("span", { class: "faint" }, options.note) : null,
+        ),
+      ),
+      h(
+        "div",
+        { class: "m-pair" },
+        trackColumn(leftLabel, leftTrack, diff),
+        h("span", { class: "m-vs", "aria-hidden": "true" }, "↔"),
+        trackColumn(rightLabel, rightTrack, diff),
+      ),
+      h(
+        "details",
+        { class: "m-why", open: options.level !== "certain" },
+        h("summary", {}, "Gründe für die Bewertung"),
+        reasonList(options.reasons),
+      ),
+      h("div", { class: "actions m-actions" }, ...options.actions),
+    );
+  }
+
+  /** Dialog: welcher Track bleibt? Gibt die Wahl oder null zurück. */
+  function mergeDialog(
+    source: MatchTrack,
+    suggested: MatchTrack,
+    warnings: string[] = [],
+  ): Promise<"suggested" | "source" | null> {
+    return new Promise((resolve) => {
+      const option = (value: string, track: MatchTrack, hint: string, checked: boolean) =>
+        h(
+          "label",
+          { class: "m-choice" },
+          h("input", { type: "radio", name: "keep", value, checked }),
+          h(
+            "span",
+            {},
+            h("strong", {}, track.title),
+            h("span", { class: "muted" }, ` – ${track.artist}`),
+            h("span", { class: "faint m-hint" }, hint),
+          ),
+        );
+      const form = h(
+        "form",
+        { method: "dialog" },
+        h("h2", {}, "Tracks zusammenführen"),
+        h(
+          "p",
+          {},
+          "Welcher Eintrag bleibt bestehen? Titel und Artist des behaltenen Tracks ändern sich nicht. " +
+            "Plattform-Links, Tags und Playlist-Einträge des anderen wandern mit, leere Felder werden ergänzt. " +
+            "Im Verlauf lässt sich alles rückgängig machen.",
+        ),
+        warnings.length
+          ? h(
+              "p",
+              { class: "m-blocked" },
+              `Bitte beachten: ${warnings.join(" · ")}. Hat der behaltene Track auf einer Plattform schon einen Link, bleibt der andere als Vorschlag erhalten.`,
+            )
+          : null,
+        h(
+          "fieldset",
+          { class: "m-choices" },
+          h("legend", { class: "visually-hidden" }, "Behalten"),
+          option("suggested", suggested, "Vorgeschlagener Track, seit länger in der Bibliothek", true),
+          option("source", source, "Quelltrack", false),
+        ),
+        h(
+          "div",
+          { class: "dialog-actions" },
+          h("button", { value: "cancel", class: "ghost" }, "Abbrechen"),
+          h("button", { value: "ok" }, "Zusammenführen"),
+        ),
+      );
+      const dialog = h("dialog", { class: "confirm" }, form);
+      dialog.addEventListener("close", () => {
+        const choice = new FormData(form).get("keep");
+        resolve(dialog.returnValue === "ok" ? (choice === "source" ? "source" : "suggested") : null);
+        dialog.remove();
+      });
+      document.body.append(dialog);
+      dialog.showModal();
+    });
+  }
+
+  /** Vom Nutzer abgebrochener Dialog – keine Fehlermeldung. */
+  class Cancelled extends Error {}
+
+  async function act(button: HTMLButtonElement, work: () => Promise<void>): Promise<void> {
+    const card = button.closest("article");
+    card?.querySelectorAll("button").forEach((b) => (b.disabled = true));
+    try {
+      await work();
+    } catch (e) {
+      if (!(e instanceof Cancelled)) toast(errorMessage(e), "error");
+      card?.querySelectorAll("button").forEach((b) => (b.disabled = false));
+    }
+  }
+
+  function candidateCard(c: MatchCandidate): HTMLElement {
+    const actions: HTMLElement[] = [];
+    const button = (label: string, cls: string, handler: (b: HTMLButtonElement) => Promise<void>) => {
+      const b = h("button", { type: "button", class: cls }, label);
+      b.addEventListener("click", () => act(b, () => handler(b)));
+      actions.push(b);
+    };
+    const confirmMerge = async () => {
+      const keep = await mergeDialog(c.source, c.suggested, blockerTexts(c.reasons));
+      if (!keep) throw new Cancelled();
+      const merge = await api.confirmMatch(c.id, keep);
+      undoToast(`„${merge.removed_title}“ wurde in „${merge.kept_title}“ zusammengeführt.`, merge);
+      await refresh();
+    };
+    const decide = (action: "reject" | "defer" | "reopen", message: string) => async () => {
+      await api.decideMatch(c.id, action);
+      toast(message);
+      await refresh();
+    };
+    if (c.status === "rejected") {
+      button("Wieder öffnen", "ghost", decide("reopen", "Vorschlag wieder geöffnet."));
+    } else {
+      button("Bestätigen", "", confirmMerge);
+      button("Ablehnen", "ghost", decide("reject", "Abgelehnt – wird nicht erneut vorgeschlagen."));
+      if (c.status === "deferred") {
+        button("Zurück zu offen", "quiet", decide("reopen", "Wieder bei den offenen Vorschlägen."));
+      } else {
+        button("Später prüfen", "quiet", decide("defer", "Unter „Später prüfen“ abgelegt."));
+      }
+    }
+    const note =
+      c.status === "open"
+        ? undefined
+        : `${c.status === "rejected" ? "Abgelehnt" : "Zurückgestellt"} ${formatDateTime(c.decided_at)}${c.decided_by ? ` von ${c.decided_by}` : ""}`;
+    return pairCard({
+      confidence: c.confidence,
+      level: c.level,
+      reasons: c.reasons,
+      left: ["Quelltrack", c.source],
+      right: ["Vorgeschlagener Track", c.suggested],
+      ...(note ? { note } : {}),
+      actions,
+    });
+  }
+
+  // --- Daten laden -------------------------------------------------------------------
+
+  async function loadSummary(): Promise<void> {
+    summary = await api.matchingSummary();
+    for (const el of document.querySelectorAll<HTMLElement>("[data-count]")) {
+      const key = el.dataset["count"] as CandidateStatus | "history";
+      const n = key === "history" ? summary.merges : summary.statuses[key];
+      el.textContent = n ? String(n) : "";
+    }
+    for (const el of document.querySelectorAll<HTMLElement>("[data-level-count]")) {
+      const key = el.dataset["levelCount"] as keyof MatchSummary["open_levels"];
+      el.textContent = String(summary.open_levels[key] ?? 0);
+    }
+    const ready = summary.auto_merge_ready;
+    autoButton.disabled = ready === 0;
+    autoButton.textContent = ready ? `Sichere zusammenführen (${ready})` : "Sichere zusammenführen";
+  }
+
+  function emptyText(): string {
+    if (tab === "deferred") return "Nichts zurückgestellt.";
+    if (tab === "rejected") return "Keine abgelehnten Vorschläge.";
+    if (level) return `Keine offenen Vorschläge der Stufe „${LEVEL_SHORT[level]}“.`;
+    return summary && summary.last_change
+      ? "Keine offenen Vorschläge. Neue Tracks? Dann „Vorschläge aktualisieren“."
+      : "Noch keine Vorschläge. „Vorschläge aktualisieren“ vergleicht alle Tracks deiner Bibliothek.";
+  }
+
+  async function loadCandidates(append = false): Promise<void> {
+    if (!append) offset = 0;
+    const page = await api.matchCandidates({
+      status: [tab as CandidateStatus],
+      level: tab === "open" && level ? [level] : [],
+      limit: PAGE,
+      offset,
+    });
+    total = page.total;
+    if (!append) list.replaceChildren();
+    for (const c of page.items) list.append(candidateCard(c));
+    offset += page.items.length;
+    if (!list.childElementCount) list.append(h("p", { class: "empty" }, emptyText()));
+    pager.hidden = total <= PAGE;
+    $("#pager-info").textContent = `${offset.toLocaleString("de-DE")} von ${plural(total, "Vorschlag", "Vorschlägen")}`;
+    $<HTMLButtonElement>("#more").disabled = offset >= total;
+  }
+
+  async function loadHistory(append = false): Promise<void> {
+    if (!append) offset = 0;
+    const page = await api.listMerges(PAGE, offset);
+    total = page.total;
+    let tbody = list.querySelector("tbody");
+    if (!append || !tbody) {
+      tbody = h("tbody");
+      list.replaceChildren(
+        page.total
+          ? h(
+              "div",
+              { class: "table-wrap" },
+              h(
+                "table",
+                { class: "data m-history" },
+                h(
+                  "thead",
+                  {},
+                  h(
+                    "tr",
+                    {},
+                    h("th", { scope: "col" }, "Behalten"),
+                    h("th", { scope: "col" }, "Aufgegangen"),
+                    h("th", { scope: "col", class: "hide-sm" }, "Art"),
+                    h("th", { scope: "col", class: "hide-sm" }, "Änderungen"),
+                    h("th", { scope: "col", class: "right" }, "Status"),
+                  ),
+                ),
+                tbody,
+              ),
+            )
+          : h("p", { class: "empty" }, "Noch keine Zusammenführungen."),
+      );
+    }
+    for (const m of page.items) tbody.append(historyRow(m));
+    offset += page.items.length;
+    pager.hidden = total <= PAGE;
+    $("#pager-info").textContent = `${offset.toLocaleString("de-DE")} von ${plural(total, "Eintrag", "Einträgen")}`;
+    $<HTMLButtonElement>("#more").disabled = offset >= total;
+  }
+
+  function historyRow(m: TrackMerge): HTMLElement {
+    const undone = m.status === "undone";
+    let status: HTMLElement;
+    if (undone) {
+      status = h("span", { class: "faint" }, `Rückgängig ${formatDateTime(m.undone_at)}`);
+    } else {
+      const b = h("button", { type: "button", class: "ghost" }, "Rückgängig");
+      b.addEventListener("click", async () => {
+        const ok = await confirmDialog({
+          title: "Zusammenführung rückgängig machen?",
+          message: `„${m.removed_title}“ wird mit derselben ID wiederhergestellt – mit seinen Links, Tags und Playlist-Einträgen. Das Paar gilt danach als „unterschiedlich“.`,
+          confirm: "Rückgängig machen",
+        });
+        if (!ok) return;
+        b.disabled = true;
+        try {
+          await api.undoMerge(m.id);
+          toast("Zusammenführung rückgängig gemacht.");
+          await refresh();
+        } catch (e) {
+          toast(errorMessage(e), "error");
+          b.disabled = false;
+        }
+      });
+      status = b;
+    }
+    const removed = undone
+      ? h("a", { href: `/track/?id=${encodeURIComponent(m.removed_track_id)}` }, m.removed_title)
+      : h("span", {}, m.removed_title);
+    return h(
+      "tr",
+      { class: undone ? "m-undone" : null },
+      h(
+        "td",
+        { class: "t-title" },
+        h("a", { href: `/track/?id=${encodeURIComponent(m.kept_track_id)}` }, m.kept_title),
+        h("span", { class: "m-sub" }, `${m.kept_artist} · ${formatDateTime(m.created_at)}`),
+      ),
+      h("td", { class: "t-title" }, removed, h("span", { class: "m-sub" }, m.removed_artist)),
+      h(
+        "td",
+        { class: "hide-sm" },
+        m.method === "auto" ? "Automatisch" : "Manuell",
+        h(
+          "span",
+          { class: "m-sub" },
+          [m.confidence !== null ? `${m.confidence}/100` : null, m.created_by].filter(Boolean).join(" · "),
+        ),
+      ),
+      h("td", { class: "hide-sm muted" }, mergeChanges(m)),
+      h("td", { class: "right" }, status),
+    );
+  }
+
+  async function refresh(): Promise<void> {
+    try {
+      await loadSummary();
+      if (tab === "history") await loadHistory();
+      else if (tab !== "compare") await loadCandidates();
+      else if (picked.a && picked.b) await runCompare();
+    } catch (e) {
+      list.replaceChildren(h("p", { class: "empty" }, errorMessage(e)));
+    }
+  }
+
+  function selectTab(next: Tab): void {
+    tab = next;
+    for (const b of document.querySelectorAll<HTMLButtonElement>(".m-tab")) {
+      b.setAttribute("aria-pressed", String(b.dataset["tab"] === next));
+    }
+    $("#levels").hidden = next !== "open";
+    $("#compare").hidden = next !== "compare";
+    list.hidden = next === "compare";
+    pager.hidden = true;
+    const url = new URL(window.location.href);
+    if (next === "open") url.searchParams.delete("tab");
+    else url.searchParams.set("tab", next);
+    history.replaceState(null, "", url);
+    void refresh();
+  }
+
+  // --- Manuell vergleichen -----------------------------------------------------------
+
+  const picked: { a: Track | null; b: Track | null } = { a: null, b: null };
+
+  function showPicked(slot: "a" | "b"): void {
+    const box = $(`.m-picker[data-slot="${slot}"] .m-picked`);
+    const track = picked[slot];
+    box.replaceChildren();
+    if (!track) return;
+    const clear = h("button", { type: "button", class: "quiet", "aria-label": "Auswahl entfernen" }, "Ändern");
+    clear.addEventListener("click", () => {
+      picked[slot] = null;
+      showPicked(slot);
+      $("#compare-result").replaceChildren();
+    });
+    box.append(
+      h(
+        "div",
+        { class: "m-pick" },
+        h("span", {}, h("strong", {}, track.title), h("span", { class: "muted" }, ` – ${track.artist}`)),
+        coverageStrip(track, false),
+        clear,
+      ),
+    );
+  }
+
+  function setupPicker(slot: "a" | "b"): void {
+    const root = $(`.m-picker[data-slot="${slot}"]`);
+    const input = $<HTMLInputElement>("input", root);
+    const results = $("ul", root);
+    let timer = 0;
+    input.addEventListener("input", () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(async () => {
+        const q = input.value.trim();
+        results.replaceChildren();
+        if (q.length < 2) return;
+        try {
+          const page = await api.listTracks({ q, limit: 8 });
+          for (const track of page.items) {
+            const b = h(
+              "button",
+              { type: "button", class: "m-result" },
+              h("span", {}, h("strong", {}, track.title), h("span", { class: "muted" }, ` – ${track.artist}`)),
+              h("span", { class: "faint" }, [track.version, formatDuration(track.duration_ms)].filter(Boolean).join(" · ")),
+            );
+            b.addEventListener("click", () => {
+              picked[slot] = track;
+              input.value = "";
+              results.replaceChildren();
+              showPicked(slot);
+              void runCompare();
+            });
+            results.append(h("li", {}, b));
+          }
+          if (!page.items.length) results.append(h("li", { class: "faint" }, "Nichts gefunden."));
+        } catch (e) {
+          results.append(h("li", { class: "form-error" }, errorMessage(e)));
+        }
+      }, 250);
+    });
+  }
+
+  async function runCompare(): Promise<void> {
+    const target = $("#compare-result");
+    const { a, b } = picked;
+    if (!a || !b) return;
+    if (a.id === b.id) {
+      target.replaceChildren(h("p", { class: "form-error" }, "Bitte zwei verschiedene Tracks wählen."));
+      return;
+    }
+    let result: MatchComparison;
+    try {
+      result = await api.compareTracks(a.id, b.id);
+    } catch (e) {
+      target.replaceChildren(h("p", { class: "form-error" }, errorMessage(e)));
+      return;
+    }
+    const actions: HTMLElement[] = [];
+    const add = (label: string, cls: string, handler: () => Promise<void>) => {
+      const btn = h("button", { type: "button", class: cls }, label);
+      btn.addEventListener("click", () => act(btn, handler));
+      actions.push(btn);
+    };
+    const merge = (keep: MatchTrack, drop: MatchTrack, different: boolean) => async () => {
+      const ok = await confirmDialog({
+        title: different ? "Wirklich zusammenführen?" : "Tracks zusammenführen?",
+        message:
+          (different
+            ? "Die Engine hält diese Tracks für unterschiedlich (z. B. andere Version). "
+            : "") +
+          `„${drop.title}“ geht in „${keep.title}“ auf. Links, Tags und Playlist-Einträge wandern mit; im Verlauf rückgängig zu machen.`,
+        confirm: "Zusammenführen",
+        danger: different,
+      });
+      if (!ok) throw new Cancelled();
+      const m = await api.mergeTracks(keep.id, drop.id);
+      undoToast(`„${m.removed_title}“ wurde in „${m.kept_title}“ zusammengeführt.`, m);
+      picked.a = await api.getTrack(keep.id);
+      picked.b = null;
+      showPicked("a");
+      showPicked("b");
+      target.replaceChildren();
+      await loadSummary();
+    };
+    if (result.candidate_status === "rejected" && result.candidate_id) {
+      const id = result.candidate_id;
+      add("Markierung „unterschiedlich“ aufheben", "ghost", async () => {
+        await api.decideMatch(id, "reopen");
+        toast("Markierung aufgehoben.");
+        await runCompare();
+      });
+    } else {
+      const different = result.level === "different";
+      const reject = async () => {
+        await api.rejectPair(result.track_a.id, result.track_b.id);
+        toast("Gemerkt: diese Tracks sind unterschiedlich.");
+        await runCompare();
+      };
+      if (different) add("Als unterschiedlich markieren", "", reject);
+      add("Zusammenführen, A behalten", different ? "ghost" : "", merge(result.track_a, result.track_b, different));
+      add("B behalten", "ghost", merge(result.track_b, result.track_a, different));
+      if (!different) add("Als unterschiedlich markieren", "quiet", reject);
+    }
+    const note =
+      result.candidate_status === "rejected"
+        ? "Als unterschiedlich markiert – Zusammenführen ist gesperrt."
+        : result.candidate_status
+          ? `Liegt als Vorschlag vor (${result.candidate_status === "open" ? "offen" : "später prüfen"}).`
+          : undefined;
+    target.replaceChildren(
+      pairCard({
+        confidence: result.confidence,
+        level: result.level,
+        reasons: result.reasons,
+        left: ["Track A", result.track_a],
+        right: ["Track B", result.track_b],
+        ...(note ? { note } : {}),
+        actions,
+      }),
+    );
+  }
+
+  // --- Start -------------------------------------------------------------------------
+
+  if (requireLogin(tokens, content)) {
+    for (const b of document.querySelectorAll<HTMLButtonElement>(".m-tab")) {
+      b.addEventListener("click", () => selectTab(b.dataset["tab"] as Tab));
+    }
+    for (const b of document.querySelectorAll<HTMLButtonElement>("#levels .chip")) {
+      b.addEventListener("click", () => {
+        level = (b.dataset["level"] ?? "") as MatchLevel | "";
+        for (const other of document.querySelectorAll("#levels .chip")) {
+          other.setAttribute("aria-pressed", String(other === b));
+        }
+        void loadCandidates().catch((e: unknown) => toast(errorMessage(e), "error"));
+      });
+    }
+    $("#more").addEventListener("click", () => {
+      const load = tab === "history" ? loadHistory(true) : loadCandidates(true);
+      void load.catch((e: unknown) => toast(errorMessage(e), "error"));
+    });
+    scanButton.addEventListener("click", async () => {
+      scanButton.disabled = true;
+      scanButton.textContent = "Vergleiche …";
+      try {
+        const r = await api.scanMatching();
+        const found = (r.levels.certain ?? 0) + (r.levels.likely ?? 0) + (r.levels.review ?? 0);
+        toast(
+          `${plural(r.tracks, "Track", "Tracks")} geprüft: ${plural(found, "Vorschlag", "Vorschläge")}, davon ${r.created} neu` +
+            (r.unmatchable ? `. ${plural(r.unmatchable, "Track", "Tracks")} ohne verwertbare Angaben bleiben separat.` : "."),
+        );
+        if (tab === "compare") selectTab("open");
+        else await refresh();
+      } catch (e) {
+        toast(errorMessage(e), "error");
+      } finally {
+        scanButton.disabled = false;
+        scanButton.textContent = "Vorschläge aktualisieren";
+      }
+    });
+    autoButton.addEventListener("click", async () => {
+      const n = summary?.auto_merge_ready ?? 0;
+      const ok = await confirmDialog({
+        title: `${plural(n, "sicheres Paar", "sichere Paare")} zusammenführen?`,
+        message:
+          "Zusammengeführt werden nur Paare der Stufe „Sicher identifiziert“ ohne Einwände: gleiche ISRC oder " +
+          "identischer Titel, Artist und Version mit gleicher Dauer, keine unterschiedlichen Tracks derselben " +
+          "Plattform. Jedes Paar wird vorher neu geprüft; alles bleibt im Verlauf rückgängig zu machen.",
+        confirm: "Zusammenführen",
+      });
+      if (!ok) return;
+      autoButton.disabled = true;
+      try {
+        const r = await api.autoMerge();
+        toast(
+          `${plural(r.merged.length, "Paar", "Paare")} zusammengeführt` +
+            (r.skipped ? `, ${r.skipped} nach erneuter Prüfung übersprungen.` : "."),
+        );
+        await refresh();
+      } catch (e) {
+        toast(errorMessage(e), "error");
+        await loadSummary().catch(() => undefined);
+      }
+    });
+    setupPicker("a");
+    setupPicker("b");
+
+    const initial = param("tab");
+    const preset = param("a");
+    if (preset) {
+      api
+        .getTrack(preset)
+        .then((track) => {
+          picked.a = track;
+          showPicked("a");
+        })
+        .catch((e: unknown) => toast(errorMessage(e), "error"));
+    }
+    selectTab(
+      initial === "deferred" || initial === "rejected" || initial === "history" || initial === "compare"
+        ? initial
+        : "open",
+    );
+  }
+</script>
+
+<style is:global>
+  .m-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  button.m-tab {
+    min-height: 40px;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    background: none;
+    color: var(--muted);
+    padding: 8px 12px;
+    margin-bottom: -1px;
+  }
+  button.m-tab:hover {
+    color: var(--ink);
+    filter: none;
+    background: none;
+  }
+  button.m-tab[aria-pressed="true"] {
+    color: var(--ink);
+    border-bottom-color: var(--accent);
+  }
+  .m-count {
+    color: var(--faint);
+    font-variant-numeric: tabular-nums;
+  }
+  .m-levels {
+    margin-bottom: 16px;
+  }
+  .m-list {
+    display: grid;
+    gap: 16px;
+  }
+
+  .m-card {
+    display: grid;
+    gap: 16px;
+    border-left: 3px solid var(--line-strong);
+  }
+  .m-card[data-level="certain"] {
+    border-left-color: var(--ok);
+  }
+  .m-card[data-level="likely"] {
+    border-left-color: color-mix(in srgb, var(--ok) 55%, var(--line-strong));
+  }
+  .m-card[data-level="review"] {
+    border-left-color: var(--warn);
+  }
+  .m-card[data-level="different"] {
+    border-left-color: var(--danger);
+  }
+
+  .m-head {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .m-score {
+    display: grid;
+    grid-template-columns: auto auto;
+    align-items: baseline;
+    column-gap: 2px;
+    min-width: 88px;
+  }
+  .m-num {
+    font-size: 1.9rem;
+    font-weight: 650;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+  .m-of {
+    color: var(--faint);
+    font-size: 0.85rem;
+  }
+  .m-bar {
+    grid-column: 1 / -1;
+    display: block;
+    height: 4px;
+    margin-top: 6px;
+    border-radius: 2px;
+    background: var(--raised);
+    overflow: hidden;
+  }
+  .m-bar > span {
+    display: block;
+    height: 100%;
+    background: var(--line-strong);
+  }
+  .m-score[data-level="certain"] .m-bar > span {
+    background: var(--ok);
+  }
+  .m-score[data-level="likely"] .m-bar > span {
+    background: color-mix(in srgb, var(--ok) 60%, var(--muted));
+  }
+  .m-score[data-level="review"] .m-bar > span {
+    background: var(--warn);
+  }
+  .m-score[data-level="different"] .m-bar > span {
+    background: var(--danger);
+  }
+  .m-verdict {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 0.9rem;
+  }
+  .m-verdict strong {
+    font-size: 1rem;
+  }
+  .m-blocked {
+    color: var(--warn);
+  }
+
+  .m-pair {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 16px;
+  }
+  .m-vs {
+    align-self: center;
+    color: var(--faint);
+    font-size: 1.2rem;
+  }
+  .m-track {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 14px;
+    border-radius: var(--r-sm);
+    background: var(--raised);
+  }
+  .m-label {
+    margin: 0;
+    font-size: 0.78rem;
+    color: var(--faint);
+  }
+  a.m-title {
+    font-weight: 600;
+    text-decoration: none;
+    overflow-wrap: anywhere;
+  }
+  a.m-title:hover {
+    text-decoration: underline;
+  }
+  .m-artist,
+  .m-version {
+    margin: 0;
+    color: var(--muted);
+  }
+  .m-version {
+    font-size: 0.88rem;
+  }
+  .m-facts {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 3px 12px;
+    margin: 6px 0 0;
+    font-size: 0.85rem;
+  }
+  .m-facts dt {
+    color: var(--faint);
+  }
+  .m-facts dd {
+    margin: 0;
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+  }
+  .m-diff {
+    color: var(--warn) !important;
+  }
+  .m-facts dd.m-diff,
+  .m-version.m-diff {
+    font-weight: 600;
+  }
+
+  .m-why summary {
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+  ul.m-reasons {
+    display: grid;
+    gap: 4px;
+    margin: 10px 0 0;
+    padding: 0;
+    list-style: none;
+    font-size: 0.88rem;
+  }
+  .m-reasons li {
+    display: grid;
+    grid-template-columns: 76px 1fr;
+    gap: 10px;
+    align-items: baseline;
+  }
+  .m-effect {
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    color: var(--faint);
+    font-size: 0.82rem;
+  }
+  .m-reasons li[data-kind="plus"] .m-effect {
+    color: var(--ok);
+  }
+  .m-reasons li[data-kind="minus"] .m-effect,
+  .m-reasons li[data-kind="cap"] .m-effect {
+    color: var(--warn);
+  }
+  .m-reasons li[data-kind="block"] .m-effect,
+  .m-reasons li[data-kind="block"] {
+    color: var(--warn);
+  }
+  .m-reasons li[data-kind="info"] {
+    color: var(--muted);
+  }
+
+  .m-choices {
+    display: grid;
+    gap: 8px;
+    margin: 0 0 8px;
+    padding: 0;
+    border: 0;
+  }
+  label.m-choice {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 10px 12px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--r-sm);
+    cursor: pointer;
+  }
+  label.m-choice:has(input:checked) {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .m-hint {
+    display: block;
+    font-size: 0.82rem;
+  }
+  .m-toast {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+
+  .m-compare > p {
+    margin-top: 0;
+  }
+  .m-pickers {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+  .m-picker input {
+    width: 100%;
+  }
+  ul.m-results {
+    display: grid;
+    gap: 2px;
+    margin: 6px 0 0;
+    padding: 0;
+    list-style: none;
+  }
+  button.m-result {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    min-height: 0;
+    border: 1px solid transparent;
+    background: none;
+    color: var(--ink);
+    text-align: left;
+    padding: 8px 10px;
+    font-weight: 400;
+  }
+  button.m-result:hover {
+    background: var(--raised);
+    filter: none;
+  }
+  .m-pick {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-top: 8px;
+    padding: 10px 12px;
+    border-radius: var(--r-sm);
+    background: var(--raised);
+  }
+  .m-pick > span:first-child {
+    flex: 1;
+    min-width: 0;
+  }
+  .m-sub {
+    display: block;
+    color: var(--muted);
+    font-size: 0.82rem;
+  }
+  label.m-choice input {
+    flex: none;
+    width: auto;
+    min-height: 0;
+    margin: 3px 0 0;
+    accent-color: var(--accent);
+  }
+  table.m-history tr.m-undone td {
+    color: var(--faint);
+  }
+
+  @media (max-width: 720px) {
+    .m-pair,
+    .m-pickers {
+      grid-template-columns: 1fr;
+    }
+    .m-vs {
+      justify-self: center;
+      transform: rotate(90deg);
+    }
+  }
+</style>

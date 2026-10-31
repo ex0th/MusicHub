@@ -195,6 +195,35 @@ Ablauf, Formate und Regeln: [IMPORT_EXPORT.md](IMPORT_EXPORT.md).
 | GET | `/api/v1/export/library?format=csv\|json` | gesamte Bibliothek (Download) |
 | GET | `/api/v1/playlists/{id}/export?format=csv\|json` | eine Playlist (Download) |
 
+### Matching
+
+Regeln, Score und Stufen: [MATCHING.md](MATCHING.md). Alle Pfade unter `/api/v1/matching`.
+
+| Methode | Pfad | Beschreibung |
+|---|---|---|
+| POST | `/scan` | Alle Tracks vergleichen, Vorschläge anlegen/aktualisieren → `{tracks, unmatchable, compared, created, updated, removed, levels}` |
+| GET | `/summary` | `statuses` (open/deferred/rejected), `open_levels`, `auto_merge_ready`, `merges` |
+| GET | `/candidates?status=&level=&limit=&offset=` | Vorschläge, höchste Confidence zuerst (Standard `status=open`) |
+| GET | `/candidates/{id}` | ein Vorschlag |
+| POST | `/candidates/{id}/confirm` | `{"keep": "suggested" \| "source"}` – zusammenführen → Merge; abgelehnt → `409` |
+| POST | `/candidates/{id}/reject` | Ablehnen (wird nie erneut vorgeschlagen) |
+| POST | `/candidates/{id}/defer` | Später prüfen; abgelehnt → `409` |
+| POST | `/candidates/{id}/reopen` | Ablehnung/Zurückstellung aufheben, neu bewertet |
+| GET | `/compare?track_a=&track_b=` | Zwei beliebige Tracks bewerten, inkl. vorhandenem Vorschlag |
+| POST | `/reject-pair` | `{track_a_id, track_b_id}` – als unterschiedlich markieren |
+| POST | `/merge` | `{keep_track_id, merge_track_id}` – manuell zusammenführen; gleiche ID `422`, als unterschiedlich markiert `409` |
+| POST | `/auto-merge` | Nur `certain` ohne Blocker, jeweils neu geprüft → `{merged, skipped}` |
+| GET | `/merges?limit=&offset=` | Verlauf, neueste zuerst |
+| POST | `/merges/{id}/undo` | Rückgängig; schon rückgängig oder behaltener Track fehlt → `409` (mit `track_id`) |
+
+Ein Vorschlag enthält `confidence` (0–100), `level` (`certain` | `likely` | `review`),
+`reasons` (`{code, text, effect, kind}`, `kind` = `plus` | `minus` | `info` | `cap` |
+`block`), `blockers`, `auto_merge_allowed`, `source` (neuerer Track) und `suggested`
+(älterer Track), beide als Track mit `playlist_count` und `detected_version`.
+Ein Merge enthält `kept_track_id`, `removed_track_id`, `method`, `status`, `changes`
+(`sources`, `sources_demoted`, `playlist_items`, `tags_added`, `import_items`) und
+`filled_fields`.
+
 ## Neue Endpunkte – Checkliste
 
 1. Router unter `api/routes/`, in `main.py` einbinden.

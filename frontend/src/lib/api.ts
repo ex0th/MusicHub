@@ -4,6 +4,7 @@
 import type { TokenProvider } from "./auth";
 import type {
   Availability,
+  CandidateStatus,
   ImportDecision,
   ImportFormats,
   ImportItem,
@@ -14,6 +15,11 @@ import type {
   LibraryStats,
   LinkStatus,
   LiveResponse,
+  MatchCandidate,
+  MatchComparison,
+  MatchLevel,
+  MatchScanResult,
+  MatchSummary,
   Me,
   Page,
   PlaylistDetail,
@@ -26,6 +32,7 @@ import type {
   Track,
   TrackDetail,
   TrackInput,
+  TrackMerge,
   TrackQuery,
   TrackSource,
 } from "./types";
@@ -315,6 +322,68 @@ export class ApiClient {
 
   discardImport(id: string): Promise<ImportRun> {
     return this.request(`/api/v1/imports/${enc(id)}/discard`, { method: "POST" });
+  }
+
+  // --- Matching --------------------------------------------------------------
+
+  matchingSummary(): Promise<MatchSummary> {
+    return this.request("/api/v1/matching/summary");
+  }
+
+  scanMatching(): Promise<MatchScanResult> {
+    return this.request("/api/v1/matching/scan", { method: "POST" });
+  }
+
+  matchCandidates(
+    params: { status?: CandidateStatus[]; level?: MatchLevel[]; limit?: number; offset?: number } = {},
+  ): Promise<Page<MatchCandidate>> {
+    const query = new URLSearchParams();
+    for (const s of params.status ?? []) query.append("status", s);
+    for (const l of params.level ?? []) query.append("level", l);
+    query.set("limit", String(params.limit ?? 20));
+    query.set("offset", String(params.offset ?? 0));
+    return this.request(`/api/v1/matching/candidates?${query.toString()}`);
+  }
+
+  confirmMatch(id: string, keep: "suggested" | "source" = "suggested"): Promise<TrackMerge> {
+    return this.request(`/api/v1/matching/candidates/${enc(id)}/confirm`, {
+      method: "POST",
+      body: JSON.stringify({ keep }),
+    });
+  }
+
+  decideMatch(id: string, action: "reject" | "defer" | "reopen"): Promise<MatchCandidate> {
+    return this.request(`/api/v1/matching/candidates/${enc(id)}/${action}`, { method: "POST" });
+  }
+
+  compareTracks(trackA: string, trackB: string): Promise<MatchComparison> {
+    return this.request(`/api/v1/matching/compare?track_a=${enc(trackA)}&track_b=${enc(trackB)}`);
+  }
+
+  rejectPair(trackA: string, trackB: string): Promise<MatchCandidate> {
+    return this.request("/api/v1/matching/reject-pair", {
+      method: "POST",
+      body: JSON.stringify({ track_a_id: trackA, track_b_id: trackB }),
+    });
+  }
+
+  mergeTracks(keepTrackId: string, mergeTrackId: string): Promise<TrackMerge> {
+    return this.request("/api/v1/matching/merge", {
+      method: "POST",
+      body: JSON.stringify({ keep_track_id: keepTrackId, merge_track_id: mergeTrackId }),
+    });
+  }
+
+  autoMerge(): Promise<{ merged: TrackMerge[]; skipped: number }> {
+    return this.request("/api/v1/matching/auto-merge", { method: "POST" });
+  }
+
+  listMerges(limit = 20, offset = 0): Promise<Page<TrackMerge>> {
+    return this.request(`/api/v1/matching/merges?limit=${limit}&offset=${offset}`);
+  }
+
+  undoMerge(id: string): Promise<TrackMerge> {
+    return this.request(`/api/v1/matching/merges/${enc(id)}/undo`, { method: "POST" });
   }
 
   // --- Downloads (Export, Bericht) --------------------------------------------

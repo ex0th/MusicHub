@@ -15,7 +15,7 @@ PostgreSQL 17, Zugriff über SQLAlchemy 2 (synchron, psycopg 3), Migrationen mit
   (Links eines Tracks, Einträge einer Playlist). Ein Track in einer Playlist ist mit
   `RESTRICT` geschützt.
 
-## Schema (Revision `0003`)
+## Schema (Revision `0004`)
 
 ```
                 tags
@@ -32,6 +32,8 @@ playlist_items n───1 playlists 1───n playlist_targets
 
 jobs (eigenständig)
 import_runs 1───n import_items ──(SET NULL)──> tracks
+match_candidates (track_a_id, track_b_id) ──(CASCADE)──> tracks
+track_merges (kept_track_id, removed_track_id – ohne Fremdschlüssel)
 ```
 
 ### `tracks` – die lokale Sammlung
@@ -127,6 +129,25 @@ Uploads), erkanntes `format`, `status` (`analyzed` | `committed` | `discarded` |
 (`created` | `linked` | `skipped` | `failed`), `result_track_id`, `result_message`.
 Verweise auf Tracks sind `ON DELETE SET NULL` – das Protokoll bleibt, wenn Tracks gelöscht werden.
 
+### `match_candidates` – Matching-Vorschläge
+
+Ein ungeordnetes Paar lokaler Tracks, gespeichert mit `track_a_id < track_b_id`
+(CHECK `ordered_pair`, eindeutig je Paar, beide `ON DELETE CASCADE`). Spalten:
+`confidence` (0–100), `level` (`certain` | `likely` | `review` | `different`), `reasons`
+und `blockers` (jsonb, Begründung der Engine), `engine_version`, `status` (`open` |
+`deferred` | `rejected`), `decided_at`, `decided_by`. Index `(status, confidence)`.
+Abgelehnte Paare sind das Gedächtnis der Engine und werden bei Scans nicht verändert.
+
+### `track_merges` – Protokoll der Zusammenführungen
+
+`kept_track_id`, `removed_track_id` (bewusst **ohne** Fremdschlüssel, damit das Protokoll
+Löschungen überdauert), Titel/Artist beider Tracks zum Anzeigen, `method` (`manual` |
+`auto`), `confidence`, `level`, `status` (`merged` | `undone`), `created_by`,
+`undone_at`, `undone_by` und `snapshot` (jsonb): der entfernte Track mit allen Feldern,
+seine Quellen (mit Aktion `moved` | `moved_demoted` | `deleted_duplicate`), Tags,
+umgehängte Playlist-Einträge und Importverweise, ergänzte Felder, gesicherte Vorschläge.
+Daraus stellt `library/merge.py::undo_merge` den Track mit derselben ID wieder her.
+
 ## Geplante Tabellen
 
 Werden erst angelegt, wenn die zugehörige Funktion gebaut wird (siehe ROADMAP):
@@ -159,7 +180,7 @@ Regeln:
   Die CI prüft mit `alembic check`, dass nichts fehlt.
 - Generierte Migrationen immer lesen und nachbessern (Datenmigrationen, Defaults für
   neue Pflichtspalten, CHECK-Constraints).
-- Revisionen fortlaufend benennen (`0003_…`): `alembic revision --autogenerate --rev-id 0003 -m "…"`.
+- Revisionen fortlaufend benennen (`0004_…`): `alembic revision --autogenerate --rev-id 0004 -m "…"`.
 - Migrationen müssen auf einer Datenbank mit Bestandsdaten funktionieren und eine
   sinnvolle `downgrade()` haben. Beispiel: `0002` überführt `platform_links` mit allen
   Daten nach `track_sources` und normalisiert bestehende Playlist-Positionen.

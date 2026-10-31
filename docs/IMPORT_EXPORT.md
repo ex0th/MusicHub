@@ -27,7 +27,7 @@ Bis zur Bestätigung ändert sich an der Bibliothek nichts. Ein Import kann verw
 |---|---|---|
 | `new` | kein passender Track in der Bibliothek | neu anlegen |
 | `existing` | eindeutig erkannt (MusicHub-ID, Plattform-Link, ISRC oder Titel+Artist+Version) | vorhandenen verwenden |
-| `potential_duplicate` | ähnlicher Track desselben Artists (Ähnlichkeit ≥ 75 %) | ab 92 %: vorhandenen verwenden, sonst neu anlegen |
+| `potential_duplicate` | ähnlicher Track desselben Artists (Matching-Stufe „Prüfen“ oder besser, Confidence ≥ 60) | ab 85 („wahrscheinlich“): vorhandenen verwenden, sonst neu anlegen |
 | `file_duplicate` | derselbe Track steht weiter oben in der Datei | folgt der Entscheidung für das erste Vorkommen |
 | `invalid` | Pflichtfeld fehlt oder Wert unbrauchbar | wird übersprungen, erscheint im Bericht |
 
@@ -46,7 +46,10 @@ In dieser Reihenfolge, das erste Merkmal gewinnt (`transfer/matching.py`):
    „Innerbloom - Extended Mix“ und Titel „Innerbloom“ mit Version „Extended Mix“ sind gleich;
    „Original Mix“ zählt als keine Version; verschiedene Remixe bleiben verschieden.
 
-Ohne exakten Treffer prüft die Matching-Engine ähnliche Tracks desselben Artists.
+Ohne exakten Treffer prüft die [Matching-Engine](MATCHING.md) ähnliche Tracks desselben
+Artists – andere Versionen (Remix, Live, Extended Mix …) gelten dabei nicht als Duplikat.
+Nach dem Bestätigen eines Imports wird der Job `matching.scan` eingeplant; seine Vorschläge
+erscheinen im Bereich „Matching“.
 
 ### Was beim Bestätigen passiert
 

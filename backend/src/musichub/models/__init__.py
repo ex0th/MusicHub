@@ -12,17 +12,20 @@ from musichub.models.library import (
     TrackSource,
     track_tags,
 )
+from musichub.models.matching import MatchCandidate, TrackMerge
 
 __all__ = [
     "Base",
     "ImportItem",
     "ImportRun",
     "Job",
+    "MatchCandidate",
     "Playlist",
     "PlaylistItem",
     "PlaylistTarget",
     "Tag",
     "Track",
+    "TrackMerge",
     "TrackSource",
     "track_tags",
 ]

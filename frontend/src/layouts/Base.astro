@@ -1,7 +1,7 @@
 ---
 import "../styles/global.css";
 
-export type Section = "dashboard" | "library" | "playlists" | "platforms" | "settings";
+export type Section = "dashboard" | "library" | "playlists" | "matching" | "platforms" | "settings";
 
 interface Props {
   title: string;
@@ -18,6 +18,12 @@ const nav: { id: Section; href: string; label: string; icon: string }[] = [
     icon: "M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16zM12 9.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z",
   },
   { id: "playlists", href: "/playlists/", label: "Playlists", icon: "M4 6h12M4 11h12M4 16h7M17 14v6M14 17h6" },
+  {
+    id: "matching",
+    href: "/matching/",
+    label: "Matching",
+    icon: "M6 3v5a5 5 0 0 0 5 5h8M16 10l3 3-3 3M6 21v-5",
+  },
   { id: "platforms", href: "/platforms/", label: "Plattformen", icon: "M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4" },
   {
     id: "settings",

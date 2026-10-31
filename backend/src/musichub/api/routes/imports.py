@@ -27,6 +27,7 @@ from musichub.auth import Principal, current_principal, require_write
 from musichub.core.errors import AppError, PayloadTooLargeError
 from musichub.db.session import get_db
 from musichub.domain.types import ImportItemStatus
+from musichub.library import matching as matching_service
 from musichub.models import ImportItem, ImportRun, Track
 from musichub.transfer import service
 from musichub.transfer.decoding import ALLOWED_EXTENSIONS, human_size
@@ -261,6 +262,8 @@ def commit(
     run_id: uuid.UUID, db: Session = Depends(get_db), _: Principal = Depends(require_write)
 ) -> ImportRunOut:
     run = service.commit(db, run_id)
+    # Neue Tracks könnten Duplikate vorhandener sein: Matching-Vorschläge im Hintergrund
+    matching_service.request_scan(db)
     db.commit()
     return run_out(run)
 
