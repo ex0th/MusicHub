@@ -72,7 +72,8 @@ def db(migrated_db: None) -> Iterator[Session]:
     with get_engine().begin() as conn:
         conn.execute(
             text(
-                "TRUNCATE playlist_items, playlist_targets, platform_links, playlists, tracks, jobs"
+                "TRUNCATE playlist_items, playlist_targets, track_sources, track_tags, tags, "
+                "playlists, tracks, jobs"
             )
         )
     session = get_sessionmaker()()

@@ -1,0 +1,134 @@
+---
+import Base from "../../layouts/Base.astro";
+---
+
+<Base title="Playlists" section="playlists">
+  <div class="page-head">
+    <div>
+      <h1>Playlists</h1>
+      <p class="lede" id="count">&nbsp;</p>
+    </div>
+  </div>
+
+  <div id="content">
+    <form class="panel create-playlist" id="create" autocomplete="off">
+      <label class="field">
+        Neue Playlist
+        <input name="name" required maxlength="300" placeholder="Name" />
+      </label>
+      <label class="field">
+        <span>Beschreibung <span class="faint">(optional)</span></span>
+        <input name="description" maxlength="10000" />
+      </label>
+      <button type="submit">Playlist anlegen</button>
+    </form>
+
+    <div class="table-wrap" id="list-wrap">
+      <table class="data">
+        <thead>
+          <tr>
+            <th scope="col">Name</th>
+            <th scope="col" class="right">Tracks</th>
+            <th scope="col" class="right hide-sm">Dauer</th>
+            <th scope="col" class="right hide-sm">Geändert</th>
+          </tr>
+        </thead>
+        <tbody id="rows"><tr><td colspan="4" class="empty">Lade …</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</Base>
+
+<script>
+  import { formatTotalDuration } from "../../lib/api";
+  import { createSession, requireLogin } from "../../lib/session";
+  import type { PlaylistSummary } from "../../lib/types";
+  import { $, errorMessage, formatDate, h, plural, toast } from "../../lib/ui";
+
+  const { api, tokens } = createSession();
+  const rows = $<HTMLTableSectionElement>("#rows");
+  const form = $<HTMLFormElement>("#create");
+
+  function render(items: PlaylistSummary[]) {
+    if (!items.length) {
+      rows.replaceChildren(
+        h("tr", {}, h("td", { colspan: 4, class: "empty" }, "Noch keine Playlists. Lege oben die erste an.")),
+      );
+      return;
+    }
+    rows.replaceChildren(
+      ...items.map((p) => {
+        const href = `/playlist/?id=${p.id}`;
+        const row = h(
+          "tr",
+          { class: "link-row" },
+          h(
+            "td",
+            { class: "t-title" },
+            h("a", { href }, p.name),
+            p.description ? h("span", { class: "pl-desc" }, p.description) : null,
+          ),
+          h("td", { class: "right num" }, p.item_count.toLocaleString("de-DE")),
+          h("td", { class: "right num hide-sm" }, p.item_count ? formatTotalDuration(p.total_duration_ms) : "–"),
+          h("td", { class: "right hide-sm muted nowrap" }, formatDate(p.updated_at)),
+        );
+        row.addEventListener("click", (e) => {
+          if (!(e.target as HTMLElement).closest("a")) location.href = href;
+        });
+        return row;
+      }),
+    );
+  }
+
+  async function load() {
+    try {
+      const page = await api.listPlaylists();
+      $("#count").textContent = plural(page.total, "Playlist", "Playlists");
+      render(page.items);
+    } catch (e) {
+      rows.replaceChildren(h("tr", {}, h("td", { colspan: 4, class: "empty" }, errorMessage(e))));
+    }
+  }
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!form.reportValidity()) return;
+    const data = new FormData(form);
+    try {
+      const created = await api.createPlaylist({
+        name: String(data.get("name")).trim(),
+        description: String(data.get("description") ?? "").trim() || null,
+      });
+      location.href = `/playlist/?id=${created.id}`;
+    } catch (err) {
+      toast(errorMessage(err), "error");
+    }
+  });
+
+  if (requireLogin(tokens, $("#content"))) load();
+</script>
+
+<style is:global>
+  .create-playlist {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto;
+    gap: 12px;
+    align-items: end;
+    margin-bottom: 24px;
+  }
+  .pl-desc {
+    display: block;
+    color: var(--muted);
+    font-size: 0.86rem;
+    font-weight: 400;
+    max-width: 60ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  @media (max-width: 720px) {
+    .create-playlist {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

@@ -118,6 +118,11 @@ jobs:
           test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
             -H 'Authorization: Bearer ci-smoke-token-0123456789' \
             -d '{"title":"t","artist":"a"}' http://127.0.0.1:8080/api/v1/tracks)" = "201"
+          curl -fsS -H 'Authorization: Bearer ci-smoke-token-0123456789' \
+            http://127.0.0.1:8080/api/v1/stats | grep -q '"tracks":1'
+          for page in library/ playlists/ playlist/ track/ platforms/ settings/; do
+            curl -fsS -o /dev/null "http://127.0.0.1:8080/$page"
+          done
           docker compose ps
       - name: Logs bei Fehler
         if: failure()

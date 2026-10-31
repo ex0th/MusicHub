@@ -2,6 +2,24 @@
 
 from musichub.db.base import Base
 from musichub.models.job import Job
-from musichub.models.library import PlatformLink, Playlist, PlaylistItem, PlaylistTarget, Track
+from musichub.models.library import (
+    Playlist,
+    PlaylistItem,
+    PlaylistTarget,
+    Tag,
+    Track,
+    TrackSource,
+    track_tags,
+)
 
-__all__ = ["Base", "Job", "PlatformLink", "Playlist", "PlaylistItem", "PlaylistTarget", "Track"]
+__all__ = [
+    "Base",
+    "Job",
+    "Playlist",
+    "PlaylistItem",
+    "PlaylistTarget",
+    "Tag",
+    "Track",
+    "TrackSource",
+    "track_tags",
+]

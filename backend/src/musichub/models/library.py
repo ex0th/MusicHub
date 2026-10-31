@@ -1,22 +1,25 @@
 """Die lokale Musiksammlung – führende Instanz aller Daten.
 
 Ein Track existiert unabhängig davon, ob er auf irgendeiner Plattform verfügbar ist.
-Plattform-Zuordnungen hängen als ``PlatformLink`` am Track, nie umgekehrt.
+Plattform-Zuordnungen hängen als ``TrackSource`` am Track, nie umgekehrt.
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     CheckConstraint,
+    Column,
+    Date,
     DateTime,
     Float,
     ForeignKey,
     Index,
     Integer,
     String,
+    Table,
     Text,
     UniqueConstraint,
     func,
@@ -25,7 +28,15 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from musichub.db.base import Base, Timestamps, UUIDPrimaryKey
-from musichub.domain.types import LinkStatus, MatchMethod, Platform, sql_in
+from musichub.domain.types import Availability, LinkStatus, MatchMethod, Platform, sql_in
+
+#: n:m Tracks <-> Tags. Löschen eines Tracks oder Tags entfernt nur die Zuordnung.
+track_tags = Table(
+    "track_tags",
+    Base.metadata,
+    Column("track_id", ForeignKey("tracks.id", ondelete="CASCADE"), primary_key=True),
+    Column("tag_id", ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True, index=True),
+)
 
 
 class Track(UUIDPrimaryKey, Timestamps, Base):
@@ -35,12 +46,21 @@ class Track(UUIDPrimaryKey, Timestamps, Base):
     #: Anzeigeform der Interpreten ("A, B feat. C"). Eigene Artist-Tabelle folgt laut Roadmap.
     artist: Mapped[str] = mapped_column(String(500))
     album: Mapped[str | None] = mapped_column(String(500))
+    #: Version/Remix, z. B. "Extended Mix", "Live", "Radio Edit". Leer = Originalversion.
+    version: Mapped[str | None] = mapped_column(String(200))
     duration_ms: Mapped[int | None] = mapped_column(Integer)
     isrc: Mapped[str | None] = mapped_column(String(12), index=True)
+    release_date: Mapped[date | None] = mapped_column(Date)
     notes: Mapped[str | None] = mapped_column(Text)
 
-    links: Mapped[list[PlatformLink]] = relationship(
-        back_populates="track", cascade="all, delete-orphan", lazy="selectin"
+    sources: Mapped[list[TrackSource]] = relationship(
+        back_populates="track",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        order_by="TrackSource.platform",
+    )
+    tags: Mapped[list[Tag]] = relationship(
+        secondary=track_tags, back_populates="tracks", lazy="selectin", order_by="Tag.name"
     )
 
     __table_args__ = (
@@ -48,49 +68,72 @@ class Track(UUIDPrimaryKey, Timestamps, Base):
         CheckConstraint(
             "isrc IS NULL OR isrc ~ '^[A-Z]{2}[A-Z0-9]{3}[0-9]{7}$'", name="isrc_format"
         ),
+        Index("ix_tracks_artist_title", "artist", "title"),
     )
 
 
-class PlatformLink(UUIDPrimaryKey, Timestamps, Base):
-    """Zuordnung eines lokalen Tracks zu einem Track auf einer Streamingplattform."""
+class TrackSource(UUIDPrimaryKey, Timestamps, Base):
+    """Ein Track auf einer Streamingplattform, der einem lokalen Track zugeordnet ist."""
 
-    __tablename__ = "platform_links"
+    __tablename__ = "track_sources"
 
     track_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("tracks.id", ondelete="CASCADE"), index=True
     )
     platform: Mapped[str] = mapped_column(String(32))
+    #: Plattforminterne ID (Spotify-Track-ID, YouTube-Video-ID, SoundCloud-Permalink).
     external_id: Mapped[str] = mapped_column(String(255))
     url: Mapped[str | None] = mapped_column(String(1000))
-    status: Mapped[str] = mapped_column(String(16), default=LinkStatus.CANDIDATE.value)
+    link_status: Mapped[str] = mapped_column(String(16), default=LinkStatus.LINKED.value)
+    availability: Mapped[str] = mapped_column(
+        String(16), default=Availability.UNKNOWN.value, server_default=Availability.UNKNOWN.value
+    )
     match_method: Mapped[str] = mapped_column(String(16), default=MatchMethod.MANUAL.value)
     match_score: Mapped[float | None] = mapped_column(Float)
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    track: Mapped[Track] = relationship(back_populates="links")
+    track: Mapped[Track] = relationship(back_populates="sources")
 
     __table_args__ = (
         CheckConstraint(f"platform IN ({sql_in(Platform)})", name="platform"),
-        CheckConstraint(f"status IN ({sql_in(LinkStatus)})", name="status"),
+        CheckConstraint(f"link_status IN ({sql_in(LinkStatus)})", name="link_status"),
+        CheckConstraint(f"availability IN ({sql_in(Availability)})", name="availability"),
         CheckConstraint(f"match_method IN ({sql_in(MatchMethod)})", name="match_method"),
         CheckConstraint("match_score IS NULL OR match_score BETWEEN 0 AND 1", name="score_range"),
         UniqueConstraint("track_id", "platform", "external_id"),
-        # Pro Track und Plattform höchstens eine bestätigte Verknüpfung …
+        # Pro Track und Plattform höchstens eine bestätigte Quelle (eindeutiges Sync-Ziel) …
         Index(
-            "uq_platform_links_one_linked_per_platform",
+            "uq_track_sources_one_linked_per_platform",
             "track_id",
             "platform",
             unique=True,
-            postgresql_where=text("status = 'linked'"),
+            postgresql_where=text("link_status = 'linked'"),
         ),
         # … und ein Plattform-Track gehört höchstens zu einem lokalen Track.
         Index(
-            "uq_platform_links_external_linked_once",
+            "uq_track_sources_external_linked_once",
             "platform",
             "external_id",
             unique=True,
-            postgresql_where=text("status = 'linked'"),
+            postgresql_where=text("link_status = 'linked'"),
         ),
+    )
+
+
+class Tag(UUIDPrimaryKey, Timestamps, Base):
+    __tablename__ = "tags"
+
+    name: Mapped[str] = mapped_column(String(100))
+    #: Freie Gruppierung, z. B. "Genre", "Stimmung", "Anlass".
+    category: Mapped[str] = mapped_column(
+        String(50), default="Allgemein", server_default="Allgemein"
+    )
+
+    tracks: Mapped[list[Track]] = relationship(secondary=track_tags, back_populates="tags")
+
+    __table_args__ = (
+        # Groß-/Kleinschreibung zählt nicht: "House" und "house" in derselben Kategorie = Duplikat
+        Index("uq_tags_category_name", func.lower(category), func.lower(name), unique=True),
     )
 
 
@@ -111,6 +154,12 @@ class Playlist(UUIDPrimaryKey, Timestamps, Base):
 
 
 class PlaylistItem(UUIDPrimaryKey, Base):
+    """Ein Eintrag einer Playlist. Positionen sind lückenlos 0..n-1.
+
+    Die Eindeutigkeit von (playlist_id, position) wird erst beim Commit geprüft
+    (DEFERRABLE), damit Verschieben ohne Zwischenzustände möglich ist.
+    """
+
     __tablename__ = "playlist_items"
 
     playlist_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("playlists.id", ondelete="CASCADE"))
@@ -121,11 +170,17 @@ class PlaylistItem(UUIDPrimaryKey, Base):
     added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     playlist: Mapped[Playlist] = relationship(back_populates="items")
-    track: Mapped[Track] = relationship()
+    track: Mapped[Track] = relationship(lazy="joined", innerjoin=True)
 
     __table_args__ = (
         CheckConstraint("position >= 0", name="position_non_negative"),
-        Index("ix_playlist_items_playlist_position", "playlist_id", "position"),
+        UniqueConstraint(
+            "playlist_id",
+            "position",
+            name="uq_playlist_items_playlist_position",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
     )
 
 

@@ -2,7 +2,7 @@
 
 Etappen bauen aufeinander auf. Jede Etappe endet mit grüner CI und einem lauffähigen Stand.
 
-## ✅ Etappe 1 – Grundgerüst (dieser Stand)
+## ✅ Etappe 1 – Grundgerüst
 
 - Projektstruktur, Backend (FastAPI) und Frontend (Astro) initialisiert
 - PostgreSQL-Schema für Tracks, Plattform-Links, Playlists, Sync-Ziele, Jobs; Alembic
@@ -15,12 +15,26 @@ Etappen bauen aufeinander auf. Jede Etappe endet mit grüner CI und einem lauff�
 - Track-CRUD in API und Frontend
 - Docker Compose (Dev mit Hot Reload, Betrieb für Arcane), CI mit Smoke-Test und GHCR
 
-## Etappe 2 – Sammlung vollständig
+## ✅ Etappe 2 – Zentrale Musikbibliothek (dieser Stand)
 
-- Playlists: CRUD, Einträge hinzufügen/entfernen/verschieben (API + UI)
+- Datenmodell: Tracks mit Version/Remix und Veröffentlichungsdatum, `track_sources` mit
+  getrenntem Verknüpfungsstatus und Verfügbarkeit, Tags mit Kategorien, lückenlose
+  Playlist-Positionen (Migration `0002` übernimmt Bestandsdaten)
+- REST-API: Tracks (Suche, Filter nach Plattform/Tags/Anzahl, Sortierung, Pagination),
+  Quellen per Link oder ID, Tags, Playlists inkl. Einfügen an Position, Verschieben,
+  komplette Neuordnung, Statistik
+- Plattform-Links werden ohne Netzwerk erkannt (Spotify, YouTube, SoundCloud)
+- Frontend: Dashboard, Musikbibliothek, Track-Detail, Playlists mit Drag & Drop,
+  Plattformen, Einstellungen (Anmeldung, Farbschema, Tags); dunkel als Standard
+- Vollständig ohne externe APIs nutzbar
+
+## Etappe 2b – Bibliothek ausbauen
+
 - Eigene `artists`-Tabelle (n:m zu Tracks) statt Anzeige-String
-- Import aus CSV/JSON (z. B. Exportdateien), Duplikaterkennung über Matching-Engine
-- Volltextsuche (PostgreSQL `tsvector`/`pg_trgm`)
+- Import aus CSV/JSON mit Duplikaterkennung über die Matching-Engine (`import_runs`)
+- Mehrfachauswahl in der Bibliothek (Tags setzen, zu Playlist hinzufügen, löschen)
+- Fehlertolerante Suche (`pg_trgm`) für große Sammlungen
+- Paginierte Einträge für sehr große Playlists (> 2 000 Tracks)
 
 ## Etappe 3 – Authentik im Frontend
 
@@ -31,6 +45,7 @@ Etappen bauen aufeinander auf. Jede Etappe endet mit grüner CI und einem lauff�
 ## Etappe 4 – Erster Connector: Spotify
 
 - `connector_accounts`-Tabelle mit **verschlüsselten** OAuth-Tokens (Schlüssel aus Env)
+- SoundCloud-Permalinks beim ersten Abgleich auf numerische IDs umstellen
 - OAuth-Verbindung pro Benutzer, Token-Refresh
 - Suche, ISRC-Lookup, Playlists lesen/anlegen/ersetzen
 - Rate-Limits (HTTP 429, `Retry-After`) als wiederholbare Fehler
@@ -39,7 +54,7 @@ Etappen bauen aufeinander auf. Jede Etappe endet mit grüner CI und einem lauff�
 ## Etappe 5 – Matching und Sync produktiv
 
 - Job `matching.find_candidates`: Kandidaten je Track und Plattform, UI zum Bestätigen/Ablehnen
-- Job `sync.playlist` pro Ziel und Plattform, Ausführung des `SyncPlan`
+- Job `sync.playlist` pro Ziel und Plattform, Ausführung des `SyncPlan`, Historie in `sync_runs`
 - Geplante Syncs (Zeitplan je Playlist), Anzeige von Sync-Historie und Fehlern
 - Verfügbarkeitsprüfung bestehender Links (`unavailable`)
 
@@ -60,6 +75,10 @@ Etappen bauen aufeinander auf. Jede Etappe endet mit grüner CI und einem lauff�
 - Frontend-Anmeldung nur im Dev-Modus; mit `oidc` ist die API korrekt geschützt, die UI
   zeigt dann aber noch keinen Login → bis Etappe 3 Zugang per Reverse Proxy absichern.
 - Connectoren melden Konfiguration, die Operationen sind noch nicht implementiert.
+  Verfügbarkeit von Quellen wird bis dahin manuell gepflegt.
+- Pro Track und Plattform ist genau eine bestätigte Quelle möglich (z. B. nicht
+  gleichzeitig Musikvideo und Audio auf YouTube); weitere nur als Vorschlag.
+- Playlist-Detail lädt alle Einträge auf einmal.
 - Circuit-Breaker-Zustand ist pro Prozess (API und Worker getrennt), nicht geteilt.
 - Keine Rate-Limits an der eigenen API (hinter Reverse Proxy ergänzen).
 - Kein automatisiertes Backup.

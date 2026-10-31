@@ -3,14 +3,23 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
+from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    computed_field,
+    model_validator,
+)
 
 from musichub.connectors.base import Capability
 from musichub.connectors.registry import ConnectorState
-from musichub.domain.types import LinkStatus, MatchMethod, Platform
+from musichub.domain.types import Availability, LinkStatus, MatchMethod, Platform
 
 NonEmpty = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
 #: ISRC wird vor der Prüfung bereinigt ("us-um7-19-00001" -> "USUM71900001").
@@ -23,8 +32,40 @@ Isrc = Annotated[
 ]
 
 
+def _blank_to_none(value: object) -> object:
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    return value
+
+
+def _optional_text(max_length: int) -> object:
+    return Annotated[
+        Annotated[str, StringConstraints(max_length=max_length)] | None,
+        BeforeValidator(_blank_to_none),
+    ]
+
+
+Album = _optional_text(500)
+Version = _optional_text(200)
+Notes = _optional_text(10_000)
+Url = _optional_text(1000)
+ExternalId = _optional_text(255)
+OptionalIsrc = Annotated[Isrc | None, BeforeValidator(_blank_to_none)]
+Duration = Annotated[int | None, Field(gt=0, le=24 * 3600 * 1000)]
+
+#: Obergrenze für IDs in einer Anfrage (Tags, Tracks zum Hinzufügen …)
+MAX_BATCH = 500
+
+
 class ApiModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
+
+class InputModel(BaseModel):
+    """Basis für Request-Bodies: unbekannte Felder sind ein Fehler (Tippfehler fallen auf)."""
+
+    model_config = ConfigDict(extra="forbid")
 
 
 # --- Health --------------------------------------------------------------------
@@ -57,46 +98,170 @@ class MeResponse(ApiModel):
     auth_method: str
 
 
-# --- Tracks --------------------------------------------------------------------
+# --- Tags ----------------------------------------------------------------------
+
+TagName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+TagCategory = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50)]
 
 
-class PlatformLinkOut(ApiModel):
+class TagCreate(InputModel):
+    name: TagName
+    category: TagCategory = "Allgemein"
+
+
+class TagUpdate(InputModel):
+    name: TagName | None = None
+    category: TagCategory | None = None
+
+
+class TagOut(ApiModel):
     id: uuid.UUID
+    name: str
+    category: str
+
+
+class TagWithCountOut(TagOut):
+    track_count: int
+
+
+# --- Track-Quellen -------------------------------------------------------------
+
+
+class SourceCreate(InputModel):
+    """Entweder ``url`` (Plattform und ID werden erkannt) oder ``platform`` + ``external_id``."""
+
+    platform: Platform | None = None
+    external_id: ExternalId = None
+    url: Url = None
+    availability: Availability = Availability.UNKNOWN
+    link_status: LinkStatus = LinkStatus.LINKED
+
+    @model_validator(mode="after")
+    def _need_identifier(self) -> SourceCreate:
+        if not self.url and not (self.platform and self.external_id):
+            raise ValueError("Entweder url oder platform und external_id angeben.")
+        return self
+
+
+class SourceUpdate(InputModel):
+    external_id: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)] | None = (
+        None
+    )
+    url: Url = None
+    availability: Availability | None = None
+    link_status: LinkStatus | None = None
+    #: Ohne Angabe wird der Zeitpunkt beim Ändern von ``availability`` automatisch gesetzt.
+    last_checked_at: datetime | None = None
+
+
+class SourceOut(ApiModel):
+    id: uuid.UUID
+    track_id: uuid.UUID
     platform: Platform
     external_id: str
     url: str | None
-    status: LinkStatus
+    link_status: LinkStatus
+    availability: Availability
     match_method: MatchMethod
     match_score: float | None
-
-
-class TrackBase(ApiModel):
-    title: NonEmpty
-    artist: NonEmpty
-    album: Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)] | None = None
-    duration_ms: Annotated[int, Field(gt=0)] | None = None
-    isrc: Isrc | None = None
-    notes: str | None = None
-
-
-class TrackCreate(TrackBase):
-    pass
-
-
-class TrackUpdate(ApiModel):
-    title: NonEmpty | None = None
-    artist: NonEmpty | None = None
-    album: Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)] | None = None
-    duration_ms: Annotated[int, Field(gt=0)] | None = None
-    isrc: Isrc | None = None
-    notes: str | None = None
-
-
-class TrackOut(TrackBase):
-    id: uuid.UUID
+    last_checked_at: datetime | None
     created_at: datetime
     updated_at: datetime
-    links: list[PlatformLinkOut] = []
+
+
+# --- Tracks --------------------------------------------------------------------
+
+
+class TrackCreate(InputModel):
+    title: NonEmpty
+    artist: NonEmpty
+    album: Album = None
+    version: Version = None
+    duration_ms: Duration = None
+    isrc: OptionalIsrc = None
+    release_date: date | None = None
+    notes: Notes = None
+    tag_ids: Annotated[list[uuid.UUID], Field(max_length=MAX_BATCH)] = []
+    sources: Annotated[list[SourceCreate], Field(max_length=10)] = []
+
+
+class TrackUpdate(InputModel):
+    """Nur übergebene Felder werden geändert. ``null`` leert ein optionales Feld."""
+
+    title: NonEmpty | None = None
+    artist: NonEmpty | None = None
+    album: Album = None
+    version: Version = None
+    duration_ms: Duration = None
+    isrc: OptionalIsrc = None
+    release_date: date | None = None
+    notes: Notes = None
+    #: Ersetzt alle Tags des Tracks.
+    tag_ids: Annotated[list[uuid.UUID], Field(max_length=MAX_BATCH)] | None = None
+
+    @model_validator(mode="after")
+    def _required_not_null(self) -> TrackUpdate:
+        for name in ("title", "artist"):
+            if name in self.model_fields_set and getattr(self, name) is None:
+                raise ValueError(f"{name} darf nicht leer sein.")
+        if "tag_ids" in self.model_fields_set and self.tag_ids is None:
+            raise ValueError("tag_ids muss eine Liste sein (leer = alle Tags entfernen).")
+        return self
+
+
+class TrackOut(ApiModel):
+    id: uuid.UUID
+    title: str
+    artist: str
+    album: str | None
+    version: str | None
+    duration_ms: int | None
+    isrc: str | None
+    release_date: date | None
+    notes: str | None
+    created_at: datetime
+    updated_at: datetime
+    sources: list[SourceOut]
+    tags: list[TagOut]
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def platforms(self) -> list[Platform]:
+        """Plattformen mit bestätigter, nicht als unverfügbar markierter Quelle."""
+        return sorted(
+            {
+                s.platform
+                for s in self.sources
+                if s.link_status is LinkStatus.LINKED
+                and s.availability is not Availability.UNAVAILABLE
+            }
+        )
+
+
+class PlaylistRef(ApiModel):
+    id: uuid.UUID
+    name: str
+    occurrences: int
+
+
+class TrackDetailOut(TrackOut):
+    playlists: list[PlaylistRef]
+
+
+class TrackSort(StrEnum):
+    TITLE = "title"
+    ARTIST = "artist"
+    ALBUM = "album"
+    VERSION = "version"
+    DURATION = "duration"
+    RELEASE_DATE = "release_date"
+    CREATED_AT = "created_at"
+    UPDATED_AT = "updated_at"
+
+
+class SortOrder(StrEnum):
+    ASC = "asc"
+    DESC = "desc"
 
 
 class Page[T](ApiModel):
@@ -104,6 +269,97 @@ class Page[T](ApiModel):
     total: int
     limit: int
     offset: int
+
+
+class TagAssignment(InputModel):
+    tag_ids: Annotated[list[uuid.UUID], Field(max_length=MAX_BATCH)]
+
+
+# --- Playlists -----------------------------------------------------------------
+
+PlaylistName = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=300)
+]
+
+
+class PlaylistCreate(InputModel):
+    name: PlaylistName
+    description: Notes = None
+    track_ids: Annotated[list[uuid.UUID], Field(max_length=MAX_BATCH)] = []
+
+
+class PlaylistUpdate(InputModel):
+    name: PlaylistName | None = None
+    description: Notes = None
+
+    @model_validator(mode="after")
+    def _name_not_null(self) -> PlaylistUpdate:
+        if "name" in self.model_fields_set and self.name is None:
+            raise ValueError("name darf nicht leer sein.")
+        return self
+
+
+class PlaylistSummaryOut(ApiModel):
+    id: uuid.UUID
+    name: str
+    description: str | None
+    item_count: int
+    total_duration_ms: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class PlaylistItemOut(ApiModel):
+    id: uuid.UUID
+    position: int
+    added_at: datetime
+    track: TrackOut
+
+
+class PlaylistDetailOut(PlaylistSummaryOut):
+    items: list[PlaylistItemOut]
+
+
+class PlaylistItemsAdd(InputModel):
+    track_ids: Annotated[list[uuid.UUID], Field(min_length=1, max_length=MAX_BATCH)]
+    #: Einfügeposition (0 = an den Anfang). Ohne Angabe: ans Ende.
+    position: Annotated[int, Field(ge=0)] | None = None
+    #: Tracks, die schon in der Playlist sind, überspringen.
+    skip_existing: bool = False
+
+
+class PlaylistItemMove(InputModel):
+    position: Annotated[int, Field(ge=0)]
+
+
+class PlaylistReorder(InputModel):
+    """Vollständige neue Reihenfolge: jede Eintrags-ID der Playlist genau einmal."""
+
+    item_ids: Annotated[list[uuid.UUID], Field(max_length=10_000)]
+
+
+# --- Statistik -----------------------------------------------------------------
+
+
+class PlatformStats(ApiModel):
+    platform: Platform
+    #: Tracks mit verfügbarer, bestätigter Quelle auf dieser Plattform
+    tracks: int
+    #: davon ausschließlich auf dieser Plattform verfügbar
+    exclusive: int
+    #: bestätigte Quellen, die als nicht verfügbar markiert sind
+    unavailable: int
+
+
+class LibraryStats(ApiModel):
+    tracks: int
+    playlists: int
+    tags: int
+    #: Tracks ohne verfügbare Plattform-Quelle
+    local_only: int
+    #: Tracks, die auf genau einer Plattform verfügbar sind
+    single_platform: int
+    platforms: list[PlatformStats]
 
 
 # --- Connectoren ---------------------------------------------------------------

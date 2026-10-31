@@ -167,7 +167,8 @@ def test_track_crud(client: TestClient, auth: dict[str, str], db) -> None:  # ty
     track = created.json()
     assert track["title"] == "Blinding Lights"
     assert track["isrc"] == "USUG11904206"
-    assert track["links"] == []  # Track existiert ohne jede Plattform
+    assert track["sources"] == []  # Track existiert ohne jede Plattform
+    assert track["platforms"] == []
 
     tid = track["id"]
     assert client.get(f"/api/v1/tracks/{tid}", headers=auth).status_code == 200

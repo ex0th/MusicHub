@@ -1,44 +1,75 @@
 ---
+import "../styles/global.css";
+
+export type Section = "dashboard" | "library" | "playlists" | "platforms" | "settings";
+
 interface Props {
   title: string;
-  active: "overview" | "library";
+  section: Section;
 }
-const { title, active } = Astro.props;
+const { title, section } = Astro.props;
+
+const nav: { id: Section; href: string; label: string; icon: string }[] = [
+  { id: "dashboard", href: "/", label: "Dashboard", icon: "M4 4h7v7H4zM13 4h7v4h-7zM13 10h7v10h-7zM4 13h7v7H4z" },
+  {
+    id: "library",
+    href: "/library/",
+    label: "Musikbibliothek",
+    icon: "M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16zM12 9.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z",
+  },
+  { id: "playlists", href: "/playlists/", label: "Playlists", icon: "M4 6h12M4 11h12M4 16h7M17 14v6M14 17h6" },
+  { id: "platforms", href: "/platforms/", label: "Plattformen", icon: "M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4" },
+  {
+    id: "settings",
+    href: "/settings/",
+    label: "Einstellungen",
+    icon: "M4 7h10M18 7h2M4 17h4M12 17h8M16 5v4M10 15v4",
+  },
+];
 ---
 
 <!doctype html>
-<html lang="de">
+<html lang="de" data-theme="dark">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light dark" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#17181c" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <title>{title} · MusicHub</title>
+    <script is:inline src="/theme.js"></script>
+    <title>{title} – MusicHub</title>
   </head>
   <body>
-    <header class="topbar">
-      <a class="brand" href="/">
-        <svg viewBox="0 0 32 32" aria-hidden="true" width="26" height="26">
-          <circle cx="16" cy="16" r="15" fill="currentColor"></circle>
-          <circle cx="16" cy="16" r="10" fill="none" stroke="var(--bg)" stroke-opacity=".35"></circle>
-          <circle cx="16" cy="16" r="6.5" fill="none" stroke="var(--bg)" stroke-opacity=".35"></circle>
-          <circle cx="16" cy="16" r="3.2" fill="var(--accent)"></circle>
+    <a class="skip" href="#main">Zum Inhalt</a>
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="MusicHub, zum Dashboard">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+          <rect x="2" y="9" width="5" height="6" rx="1" fill="currentColor"></rect>
+          <rect x="9.5" y="9" width="5" height="6" rx="1" fill="var(--accent)"></rect>
+          <rect x="17" y="9" width="5" height="6" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"></rect>
         </svg>
         <span>MusicHub</span>
       </a>
       <nav aria-label="Hauptnavigation">
-        <a href="/" aria-current={active === "overview" ? "page" : undefined}>Übersicht</a>
-        <a href="/library/" aria-current={active === "library" ? "page" : undefined}>Sammlung</a>
+        {
+          nav.map((item) => (
+            <a href={item.href} aria-current={item.id === section ? "page" : undefined}>
+              <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                <path d={item.icon} />
+              </svg>
+              <span>{item.label}</span>
+            </a>
+          ))
+        }
       </nav>
-      <div class="session" id="session-indicator" data-state="anonymous">nicht angemeldet</div>
-    </header>
-    <main>
+      <div class="session" id="session-indicator" data-state="anonymous">Nicht angemeldet</div>
+    </aside>
+
+    <main id="main">
       <slot />
     </main>
-    <footer>
-      <span>Lokale Sammlung ist die führende Instanz.</span>
-      <a href="/api/docs">API-Dokumentation</a>
-    </footer>
+
+    <div id="toasts" class="toasts" aria-live="polite"></div>
 
     <script>
       import { createSession } from "../lib/session";
@@ -48,7 +79,7 @@ const { title, active } = Astro.props;
         api
           .me()
           .then((me) => {
-            indicator.textContent = `${me.display_name}${me.can_write ? "" : " (nur lesen)"}`;
+            indicator.textContent = me.can_write ? me.display_name : `${me.display_name} (nur lesen)`;
             indicator.dataset["state"] = "authenticated";
           })
           .catch(() => {
@@ -59,202 +90,3 @@ const { title, active } = Astro.props;
     </script>
   </body>
 </html>
-
-<style is:global>
-  :root {
-    --bg: #f6f3ee;
-    --surface: #fffdf9;
-    --ink: #1d1b19;
-    --muted: #6d665e;
-    --line: #e2dbd1;
-    --accent: #d2491f;
-    --ok: #2f7a4b;
-    --warn: #b7791f;
-    --err: #b3261e;
-    --radius: 10px;
-    --mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, monospace;
-    --sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #151413;
-      --surface: #1d1c1a;
-      --ink: #ece7df;
-      --muted: #a0978c;
-      --line: #2f2c29;
-      --accent: #ff7a45;
-      --ok: #5cc28a;
-      --warn: #e2b04a;
-      --err: #ff7b72;
-    }
-  }
-  * {
-    box-sizing: border-box;
-  }
-  html,
-  body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--ink);
-    font-family: var(--sans);
-    font-size: 15px;
-    line-height: 1.5;
-  }
-  body {
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-  }
-  a {
-    color: inherit;
-  }
-  main {
-    flex: 1;
-    width: 100%;
-    max-width: 1040px;
-    margin: 0 auto;
-    padding: 28px 16px 48px;
-  }
-  h1 {
-    font-size: 1.9rem;
-    letter-spacing: -0.02em;
-    margin: 0 0 4px;
-  }
-  h2 {
-    font-size: 0.78rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--muted);
-    margin: 32px 0 12px;
-    font-weight: 600;
-  }
-  .lede {
-    color: var(--muted);
-    margin: 0 0 8px;
-    max-width: 60ch;
-  }
-  .panel {
-    background: var(--surface);
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    padding: 16px 18px;
-  }
-  .mono {
-    font-family: var(--mono);
-    font-size: 0.85em;
-  }
-  input,
-  button {
-    font: inherit;
-    color: inherit;
-  }
-  input {
-    background: var(--bg);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 8px 10px;
-    min-width: 0;
-  }
-  input:focus-visible,
-  button:focus-visible,
-  a:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
-  button {
-    border: 1px solid var(--ink);
-    background: var(--ink);
-    color: var(--bg);
-    border-radius: 8px;
-    padding: 8px 14px;
-    cursor: pointer;
-    font-weight: 500;
-  }
-  button.ghost {
-    background: transparent;
-    color: var(--ink);
-    border-color: var(--line);
-  }
-  button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-  .dot {
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--muted);
-    margin-right: 6px;
-    vertical-align: 1px;
-  }
-  .dot[data-state="ok"],
-  .dot[data-state="ready"] {
-    background: var(--ok);
-  }
-  .dot[data-state="degraded"],
-  .dot[data-state="not_configured"] {
-    background: var(--warn);
-  }
-  .dot[data-state="error"],
-  .dot[data-state="suspended"] {
-    background: var(--err);
-  }
-  .error-text {
-    color: var(--err);
-  }
-
-  .topbar {
-    display: flex;
-    align-items: center;
-    gap: 24px;
-    padding: 14px 16px;
-    border-bottom: 1px solid var(--line);
-    background: var(--surface);
-    flex-wrap: wrap;
-  }
-  .brand {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    font-weight: 700;
-    letter-spacing: -0.01em;
-    text-decoration: none;
-    font-size: 1.05rem;
-  }
-  .topbar nav {
-    display: flex;
-    gap: 4px;
-  }
-  .topbar nav a {
-    text-decoration: none;
-    padding: 6px 10px;
-    border-radius: 6px;
-    color: var(--muted);
-  }
-  .topbar nav a[aria-current="page"] {
-    color: var(--ink);
-    background: var(--bg);
-  }
-  .session {
-    margin-left: auto;
-    font-size: 0.85rem;
-    color: var(--muted);
-  }
-  .session[data-state="authenticated"] {
-    color: var(--ink);
-  }
-  .session[data-state="error"] {
-    color: var(--err);
-  }
-  footer {
-    display: flex;
-    justify-content: space-between;
-    gap: 16px;
-    flex-wrap: wrap;
-    padding: 16px;
-    border-top: 1px solid var(--line);
-    font-size: 0.82rem;
-    color: var(--muted);
-  }
-</style>

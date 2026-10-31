@@ -6,7 +6,7 @@
    Reihenfolge leben in PostgreSQL. Plattformen sind Ziele (und später Importquellen),
    nie die Wahrheit.
 2. **Ein Track braucht keine Plattform.** Plattform-Zuordnungen hängen als
-   `PlatformLink` am Track. Ein Track ohne Links ist ein vollwertiger Track.
+   `TrackSource` am Track. Ein Track ohne Quellen ist ein vollwertiger Track.
 3. **Fehlerisolation pro Plattform.** Ein Fehler bei SoundCloud darf weder Spotify noch
    die lokale Verwaltung beeinträchtigen (siehe [Connectoren](#connectoren-und-fehlerisolation)).
 4. **Reine Logik ohne I/O.** Matching und Sync-Planung sind reine Funktionen und ohne
@@ -42,6 +42,7 @@
 |---|---|---|---|---|
 | 1 | Frontend | `frontend/` | UI, ruft nur die REST-API auf | API (HTTP) |
 | 2 | Backend/API | `musichub.api`, `musichub.main` | HTTP, Validierung, Auth, Transaktionen | alle Backend-Pakete |
+| 2a | Bibliothek | `musichub.library` | Fachlogik: Tracks, Quellen, Tags, Playlists, Statistik | `models`, `domain`, `core` |
 | 3 | Datenbank | `musichub.models`, `musichub.db`, `musichub/migrations` | Schema, Sessions, Migrationen | `domain` |
 | 4 | Connectoren | `musichub.connectors` | Plattform-APIs, liefern neutrale DTOs | `domain`, `core` – **nicht** `db` |
 | 5 | Matching-Engine | `musichub.matching` | Track-Ähnlichkeit bewerten | `domain` |
@@ -51,7 +52,9 @@
 Querschnitt: `musichub.core` (Konfiguration, Logging, Fehler, Middleware),
 `musichub.auth`, `musichub.domain` (gemeinsame Aufzählungstypen).
 
-Abhängigkeitsrichtung: `api`/`jobs` → `matching`/`sync`/`connectors`/`models` → `domain`/`core`.
+Abhängigkeitsrichtung: `api`/`jobs` → `library`/`matching`/`sync`/`connectors` → `models` → `domain`/`core`.
+Routen sind dünn: Sie validieren, rufen eine Funktion aus `musichub.library` auf und
+committen. Bibliotheksfunktionen committen nie selbst (eine Anfrage = eine Transaktion).
 Connectoren, Matching und Sync kennen sich gegenseitig nicht; erst Jobs/Services
 verbinden sie.
 
@@ -74,6 +77,19 @@ Jeder Connector implementiert `PlatformConnector` (`connectors/base.py`) und lie
 Der Breaker-Zustand liegt im Speicher des jeweiligen Prozesses (API und Worker getrennt).
 Plattformübergreifende Vorgänge (z. B. "Playlist auf alle Ziele synchronisieren") werden
 als **ein Job pro Plattform** eingestellt, sodass ein Fehlschlag nur diesen Job betrifft.
+
+## Bibliothek
+
+- **Verfügbarkeit** ist überall gleich definiert (`library/queries.py`): bestätigte Quelle
+  (`link_status = linked`) und nicht `availability = unavailable`. Filter, Statistik und
+  der Abdeckungsstreifen im Frontend nutzen dieselbe Regel.
+- **Plattform-Links** erkennt `domain/platform_urls.py` ohne Netzwerk; daraus entstehen
+  kanonische URLs und geprüfte IDs. So ist die Bibliothek ohne Connectoren voll nutzbar.
+- **Playlists**: Jede Änderung sperrt die Playlist-Zeile (`FOR UPDATE`) und verschiebt
+  Positionen mit einem `UPDATE`; die Eindeutigkeit wird erst beim Commit geprüft.
+  Positionen bleiben lückenlos `0..n-1`.
+- **Löschen**: Tracks in Playlists nur mit `force`, dann werden betroffene Playlists neu
+  durchnummeriert. Tags und Playlists zu löschen lässt Tracks unberührt.
 
 ## Matching
 
@@ -104,6 +120,21 @@ bleiben sie vollständig erhalten. Ausgeführt wird der Plan von einem Job.
 - Hängende Jobs (`running` > 15 min) werden neu vergeben.
 - Worker beendet sich bei SIGTERM nach dem aktuellen Job (`stop_grace_period: 60s`).
 - Neuer Job-Typ: Funktion in `jobs/handlers.py` mit `@handler("bereich.aktion")`.
+
+## Frontend
+
+Statisches Astro-Projekt ohne UI-Framework. Seiten (`src/pages/*/index.astro`) liefern das
+Gerüst, Seiten-Skripte bauen Inhalte mit dem kleinen DOM-Helfer `lib/ui.ts::h()` (nur
+`textContent`, kein `innerHTML` mit Nutzerdaten). Detailseiten nutzen Query-Parameter
+(`/track/?id=…`, `/playlist/?id=…`), weil der Build statisch ist. Filter der Bibliothek
+stehen in der URL und überleben Zurück/Neu laden.
+
+Gestaltung (`src/styles/global.css`): dunkles Schema als Standard (hell/System per
+Einstellung, gesetzt durch `public/theme.js` vor dem ersten Rendern), Akzent `#FF8000` nur
+für Handlungen, aktive Navigation und Fokus. Wiederkehrendes Element ist der
+**Abdeckungsstreifen**: drei feste Felder Spotify/SoundCloud/YouTube – gefüllt =
+verfügbar (Link zur Plattform), gestrichelt = nicht verknüpft, rot durchgestrichen =
+nicht mehr verfügbar. Seitenleiste ab 900 px, darunter Tab-Leiste unten.
 
 ## Authentifizierung
 

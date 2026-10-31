@@ -1,0 +1,464 @@
+---
+import TrackForm from "../../components/TrackForm.astro";
+import Base from "../../layouts/Base.astro";
+---
+
+<Base title="Track" section="library">
+  <div id="content">
+    <div class="page-head">
+      <div>
+        <a class="crumb" href="/library/">Musikbibliothek</a>
+        <h1 id="t-title">Lade …</h1>
+        <p class="lede" id="t-sub"></p>
+      </div>
+      <div id="t-coverage"></div>
+    </div>
+
+    <div class="detail-grid">
+      <section aria-labelledby="facts-title">
+        <h2 id="facts-title">Angaben</h2>
+        <form class="panel" id="track-form" novalidate>
+          <TrackForm idPrefix="edit" />
+          <p class="form-error" id="form-error" role="alert"></p>
+          <div class="actions">
+            <button type="submit">Änderungen speichern</button>
+            <span class="faint" id="t-meta"></span>
+          </div>
+        </form>
+      </section>
+
+      <div class="side">
+        <section aria-labelledby="sources-title">
+          <h2 id="sources-title">Plattformen</h2>
+          <div class="panel sources" id="sources"></div>
+        </section>
+
+        <section aria-labelledby="tags-title">
+          <h2 id="tags-title">Tags</h2>
+          <div class="chips" id="tags"></div>
+        </section>
+
+        <section aria-labelledby="pl-title">
+          <h2 id="pl-title">In Playlists</h2>
+          <ul class="plain" id="playlists"></ul>
+          <form class="add-to" id="add-to-playlist">
+            <label class="visually-hidden" for="playlist-select">Playlist</label>
+            <select id="playlist-select" name="playlist"></select>
+            <button type="submit" class="ghost">Hinzufügen</button>
+          </form>
+        </section>
+
+        <section>
+          <button type="button" class="danger" id="delete">Track löschen</button>
+        </section>
+      </div>
+    </div>
+  </div>
+</Base>
+
+<script>
+  import { ApiError } from "../../lib/api";
+  import { fillTrackForm, readTrackForm } from "../../lib/forms";
+  import { PLATFORMS, platformLabel } from "../../lib/platforms";
+  import { createSession, requireLogin } from "../../lib/session";
+  import type { Availability, Platform, TagWithCount, TrackDetail, TrackSource } from "../../lib/types";
+  import {
+    $,
+    confirmDialog,
+    coverageStrip,
+    errorMessage,
+    formatDate,
+    formatDateTime,
+    h,
+    param,
+    toast,
+  } from "../../lib/ui";
+
+  const { api, tokens } = createSession();
+  const id = param("id") ?? "";
+  const form = $<HTMLFormElement>("#track-form");
+  let track: TrackDetail;
+  let allTags: TagWithCount[] = [];
+
+  const AVAILABILITY: Record<Availability, string> = {
+    unknown: "Nicht geprüft",
+    available: "Verfügbar",
+    unavailable: "Nicht verfügbar",
+  };
+
+  // --- Kopf und Formular -----------------------------------------------------------
+
+  function renderHead() {
+    document.title = `${track.title} – MusicHub`;
+    $("#t-title").textContent = track.title;
+    $("#t-sub").textContent = [track.artist, track.version].filter(Boolean).join(" – ");
+    const strip = coverageStrip(track);
+    strip.classList.add("large");
+    $("#t-coverage").replaceChildren(strip);
+    $("#t-meta").textContent = `Zuletzt geändert ${formatDateTime(track.updated_at)}`;
+  }
+
+  // --- Quellen -----------------------------------------------------------------
+
+  function sourceRow(source: TrackSource) {
+    const select = h(
+      "select",
+      { "aria-label": `Verfügbarkeit auf ${platformLabel(source.platform)}` },
+      ...(Object.keys(AVAILABILITY) as Availability[]).map((value) =>
+        h("option", { value, selected: value === source.availability }, AVAILABILITY[value]),
+      ),
+    );
+    select.addEventListener("change", async () => {
+      try {
+        await api.updateSource(track.id, source.id, { availability: select.value as Availability });
+        toast("Verfügbarkeit gespeichert.");
+        await reload();
+      } catch (e) {
+        toast(errorMessage(e), "error");
+      }
+    });
+    return h(
+      "div",
+      { class: "source-linked" },
+      h(
+        "a",
+        { href: source.url ?? "#", target: "_blank", rel: "noopener noreferrer", class: "source-url" },
+        `Auf ${platformLabel(source.platform)} öffnen`,
+      ),
+      h("span", { class: "source-id faint" }, source.external_id),
+      h(
+        "div",
+        { class: "source-controls" },
+        select,
+        h(
+          "button",
+          {
+            type: "button",
+            class: "quiet",
+            onclick: async () => {
+              const ok = await confirmDialog({
+                title: "Verknüpfung entfernen?",
+                message: `Der Track bleibt erhalten, nur der Verweis auf ${platformLabel(source.platform)} wird gelöscht.`,
+                confirm: "Verknüpfung entfernen",
+                danger: true,
+              });
+              if (!ok) return;
+              try {
+                await api.deleteSource(track.id, source.id);
+                await reload();
+              } catch (e) {
+                toast(errorMessage(e), "error");
+              }
+            },
+          },
+          "Entfernen",
+        ),
+      ),
+      source.last_checked_at
+        ? h("span", { class: "faint small" }, `Geprüft am ${formatDate(source.last_checked_at)}`)
+        : null,
+    );
+  }
+
+  function linkForm(platform: Platform) {
+    const input = h("input", {
+      type: "url",
+      name: "url",
+      placeholder: `Link zu ${platformLabel(platform)}`,
+      "aria-label": `Link zu ${platformLabel(platform)}`,
+      required: true,
+    });
+    const f = h("form", { class: "link-form" }, input, h("button", { type: "submit", class: "ghost" }, "Verknüpfen"));
+    f.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      try {
+        await api.addSource(track.id, { url: input.value.trim(), platform });
+        toast(`Mit ${platformLabel(platform)} verknüpft.`);
+        await reload();
+      } catch (err) {
+        toast(errorMessage(err), "error");
+      }
+    });
+    return f;
+  }
+
+  function renderSources() {
+    const box = $("#sources");
+    box.replaceChildren(
+      ...PLATFORMS.map((p) => {
+        const linked = track.sources.find((s) => s.platform === p.id && s.link_status === "linked");
+        const others = track.sources.filter((s) => s.platform === p.id && s.link_status !== "linked");
+        return h(
+          "div",
+          { class: "source-block" },
+          h("h3", {}, p.label),
+          linked ? sourceRow(linked) : linkForm(p.id),
+          ...others.map((s) =>
+            h(
+              "div",
+              { class: "source-other" },
+              h(
+                "a",
+                { href: s.url ?? "#", target: "_blank", rel: "noopener noreferrer" },
+                s.link_status === "candidate" ? "Vorschlag" : "Abgelehnt",
+              ),
+              h("span", { class: "faint" }, s.external_id),
+              !linked && s.link_status === "candidate"
+                ? h(
+                    "button",
+                    {
+                      type: "button",
+                      class: "quiet",
+                      onclick: async () => {
+                        try {
+                          await api.updateSource(track.id, s.id, { link_status: "linked" });
+                          await reload();
+                        } catch (e) {
+                          toast(errorMessage(e), "error");
+                        }
+                      },
+                    },
+                    "Bestätigen",
+                  )
+                : null,
+            ),
+          ),
+        );
+      }),
+    );
+  }
+
+  // --- Tags ---------------------------------------------------------------------
+
+  function renderTags() {
+    const box = $("#tags");
+    if (!allTags.length) {
+      box.replaceChildren(
+        h("span", { class: "faint" }, "Noch keine Tags. "),
+        h("a", { href: "/settings/#tags" }, "Tags anlegen"),
+      );
+      return;
+    }
+    const active = new Set(track.tags.map((t) => t.id));
+    box.replaceChildren(
+      ...allTags.map((tag) =>
+        h(
+          "button",
+          {
+            type: "button",
+            class: "chip",
+            "aria-pressed": String(active.has(tag.id)),
+            onclick: async () => {
+              if (active.has(tag.id)) active.delete(tag.id);
+              else active.add(tag.id);
+              try {
+                track = await api.setTrackTags(track.id, [...active]);
+                renderTags();
+              } catch (e) {
+                toast(errorMessage(e), "error");
+              }
+            },
+          },
+          tag.name,
+          tag.category !== "Allgemein" ? h("span", { class: "cat" }, tag.category) : null,
+        ),
+      ),
+    );
+  }
+
+  // --- Playlists ----------------------------------------------------------------
+
+  async function renderPlaylists() {
+    const list = $("#playlists");
+    list.replaceChildren(
+      ...(track.playlists.length
+        ? track.playlists.map((p) =>
+            h(
+              "li",
+              {},
+              h("a", { href: `/playlist/?id=${p.id}` }, p.name),
+              p.occurrences > 1 ? h("span", { class: "faint" }, ` ${p.occurrences}×`) : null,
+            ),
+          )
+        : [h("li", { class: "faint" }, "In keiner Playlist.")]),
+    );
+    const select = $<HTMLSelectElement>("#playlist-select");
+    const page = await api.listPlaylists();
+    const options = page.items.map((p) => h("option", { value: p.id }, p.name));
+    select.replaceChildren(h("option", { value: "" }, "Zu Playlist hinzufügen …"), ...options);
+    $("#add-to-playlist").hidden = page.items.length === 0;
+  }
+
+  $("#add-to-playlist").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const select = $<HTMLSelectElement>("#playlist-select");
+    if (!select.value) return;
+    try {
+      const pl = await api.addToPlaylist(select.value, [track.id]);
+      toast(`Zu „${pl.name}“ hinzugefügt.`);
+      await reload();
+    } catch (err) {
+      toast(errorMessage(err), "error");
+    }
+  });
+
+  // --- Speichern und Löschen ----------------------------------------------------
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const error = $("#form-error");
+    error.textContent = "";
+    if (!form.reportValidity()) return;
+    try {
+      track = await api.updateTrack(track.id, readTrackForm(form));
+      renderHead();
+      toast("Änderungen gespeichert.");
+    } catch (err) {
+      error.textContent = errorMessage(err);
+    }
+  });
+
+  $("#delete").addEventListener("click", async () => {
+    const ok = await confirmDialog({
+      title: "Track löschen?",
+      message: `„${track.title}“ wird mit allen Plattform-Verknüpfungen aus der Bibliothek entfernt.`,
+      confirm: "Track löschen",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.deleteTrack(track.id);
+    } catch (e) {
+      if (!(e instanceof ApiError && e.status === 409)) return toast(errorMessage(e), "error");
+      const names = track.playlists.map((p) => `„${p.name}“`).join(", ");
+      const force = await confirmDialog({
+        title: "Track steckt in Playlists",
+        message: `Er wird auch aus ${names} entfernt.`,
+        confirm: "Trotzdem löschen",
+        danger: true,
+      });
+      if (!force) return;
+      try {
+        await api.deleteTrack(track.id, { force: true });
+      } catch (err) {
+        return toast(errorMessage(err), "error");
+      }
+    }
+    location.href = "/library/";
+  });
+
+  // --- Laden --------------------------------------------------------------------
+
+  async function reload() {
+    track = await api.getTrack(id);
+    renderHead();
+    renderSources();
+    renderTags();
+    await renderPlaylists();
+  }
+
+  async function init() {
+    const content = $("#content");
+    if (!requireLogin(tokens, content)) return;
+    if (!id) {
+      content.replaceChildren(h("div", { class: "notice" }, h("p", {}, "Kein Track ausgewählt.")));
+      return;
+    }
+    try {
+      [allTags, track] = await Promise.all([api.listTags(), api.getTrack(id)]);
+      fillTrackForm(form, track);
+      await reload();
+    } catch (e) {
+      content.replaceChildren(
+        h(
+          "div",
+          { class: "notice" },
+          h("p", {}, e instanceof ApiError && e.status === 404 ? "Diesen Track gibt es nicht (mehr)." : errorMessage(e)),
+          h("a", { class: "button ghost", href: "/library/" }, "Zur Musikbibliothek"),
+        ),
+      );
+    }
+  }
+  init();
+</script>
+
+<style is:global>
+  .detail-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.5fr) minmax(280px, 1fr);
+    gap: 32px;
+    align-items: start;
+  }
+  .detail-grid .side > section + section {
+    margin-top: 28px;
+  }
+  #track-form .actions {
+    margin-top: 6px;
+    justify-content: space-between;
+  }
+  #track-form .form-error {
+    margin-top: 12px;
+  }
+  .sources {
+    padding: 0;
+  }
+  .source-block {
+    padding: 14px 16px;
+  }
+  .source-block + .source-block {
+    border-top: 1px solid var(--line);
+  }
+  .source-block h3 {
+    margin-bottom: 8px;
+  }
+  .source-linked {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .source-url {
+    color: var(--accent-text);
+    font-weight: 560;
+    text-decoration: none;
+    width: fit-content;
+  }
+  .source-url:hover {
+    text-decoration: underline;
+  }
+  .source-id {
+    font-size: 0.8rem;
+    overflow-wrap: anywhere;
+  }
+  .source-controls,
+  .link-form,
+  .add-to {
+    display: flex;
+    gap: 8px;
+  }
+  .source-controls select {
+    flex: 1;
+  }
+  .source-other {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    font-size: 0.85rem;
+  }
+  .small {
+    font-size: 0.8rem;
+  }
+  ul.plain {
+    list-style: none;
+    margin: 0 0 12px;
+    padding: 0;
+  }
+  ul.plain li {
+    padding: 4px 0;
+  }
+  @media (max-width: 960px) {
+    .detail-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

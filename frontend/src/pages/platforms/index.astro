@@ -1,0 +1,156 @@
+---
+import Base from "../../layouts/Base.astro";
+---
+
+<Base title="Plattformen" section="platforms">
+  <div class="page-head">
+    <div>
+      <h1>Plattformen</h1>
+      <p class="lede">
+        MusicHub funktioniert ohne Plattform-Konten. Links zu Spotify, SoundCloud und YouTube trägst
+        du in der Track-Ansicht ein; automatischer Abgleich folgt, sobald ein Konto verbunden ist.
+      </p>
+    </div>
+  </div>
+
+  <div id="content">
+    <div class="platform-list" id="platforms"></div>
+  </div>
+</Base>
+
+<script>
+  import { PLATFORMS } from "../../lib/platforms";
+  import { createSession, requireLogin } from "../../lib/session";
+  import type { ConnectorState } from "../../lib/types";
+  import { $, errorMessage, h, plural } from "../../lib/ui";
+
+  const { api, tokens } = createSession();
+
+  const STATE: Record<ConnectorState, string> = {
+    not_configured: "Kein Konto verbunden",
+    ready: "Verbunden",
+    degraded: "Gestört – letzte Anfragen fehlgeschlagen",
+    suspended: "Vorübergehend pausiert",
+  };
+
+  async function load() {
+    const box = $("#platforms");
+    try {
+      const [stats, connectors] = await Promise.all([api.stats(), api.connectors()]);
+      box.replaceChildren(
+        ...PLATFORMS.map((p) => {
+          const s = stats.platforms.find((x) => x.platform === p.id);
+          const c = connectors.find((x) => x.platform === p.id);
+          const missing = stats.tracks - (s?.tracks ?? 0);
+          return h(
+            "article",
+            { class: "platform panel" },
+            h(
+              "header",
+              {},
+              h("h2", {}, p.label),
+              h(
+                "span",
+                { class: "conn", "data-state": c?.state ?? "not_configured" },
+                STATE[c?.state ?? "not_configured"],
+              ),
+            ),
+            h(
+              "dl",
+              { class: "facts" },
+              h("div", {}, h("dt", {}, "Verfügbar"), h("dd", { class: "num" }, (s?.tracks ?? 0).toLocaleString("de-DE"))),
+              h("div", {}, h("dt", {}, "Nur hier"), h("dd", { class: "num" }, (s?.exclusive ?? 0).toLocaleString("de-DE"))),
+              h("div", {}, h("dt", {}, "Nicht mehr verfügbar"), h("dd", { class: "num" }, (s?.unavailable ?? 0).toLocaleString("de-DE"))),
+              h("div", {}, h("dt", {}, "Ohne Verknüpfung"), h("dd", { class: "num" }, missing.toLocaleString("de-DE"))),
+            ),
+            c?.last_error ? h("p", { class: "error-line" }, c.last_error) : null,
+            h(
+              "div",
+              { class: "actions" },
+              h("a", { class: "button ghost", href: `/library/?platform=${p.id}` }, "Verknüpfte Tracks"),
+              missing
+                ? h("a", { class: "button ghost", href: `/library/?missing=${p.id}` }, plural(missing, "fehlender Track", "fehlende Tracks"))
+                : null,
+            ),
+          );
+        }),
+      );
+    } catch (e) {
+      box.replaceChildren(h("div", { class: "notice" }, h("p", {}, errorMessage(e))));
+    }
+  }
+
+  if (requireLogin(tokens, $("#content"))) load();
+</script>
+
+<style is:global>
+  .platform-list {
+    display: grid;
+    gap: 16px;
+  }
+  .platform header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 14px;
+  }
+  .platform h2 {
+    margin: 0;
+    font-size: 1.2rem;
+  }
+  .conn {
+    font-size: 0.86rem;
+    color: var(--muted);
+  }
+  .conn::before {
+    content: "";
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 7px;
+    border-radius: 50%;
+    border: 1.5px solid var(--faint);
+  }
+  .conn[data-state="ready"]::before {
+    background: var(--ok);
+    border-color: var(--ok);
+  }
+  .conn[data-state="degraded"]::before {
+    background: var(--warn);
+    border-color: var(--warn);
+  }
+  .conn[data-state="suspended"]::before {
+    background: var(--danger);
+    border-color: var(--danger);
+  }
+  .facts {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+    margin: 0 0 16px;
+  }
+  .facts div {
+    display: flex;
+    flex-direction: column-reverse;
+  }
+  .facts dt {
+    color: var(--muted);
+    font-size: 0.84rem;
+  }
+  .facts dd {
+    margin: 0;
+    font-size: 1.35rem;
+    font-weight: 620;
+  }
+  .error-line {
+    color: var(--danger);
+    font-size: 0.88rem;
+  }
+  @media (max-width: 720px) {
+    .facts {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+</style>

@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from musichub.api.routes import health, system, tracks
+from musichub.api.routes import health, playlists, system, tags, tracks
 from musichub.auth.verifiers import build_verifier
 from musichub.connectors.platforms import default_connectors
 from musichub.connectors.registry import ConnectorRegistry
@@ -65,6 +65,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health.router)
     app.include_router(system.router)
     app.include_router(tracks.router)
+    app.include_router(playlists.router)
+    app.include_router(tags.router)
 
     if settings.app_env is AppEnv.PRODUCTION and settings.cors_origins == ["*"]:
         log.warning("CORS erlaubt alle Origins in production – bitte einschränken.")

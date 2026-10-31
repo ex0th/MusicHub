@@ -3,13 +3,25 @@
 
 import type { TokenProvider } from "./auth";
 import type {
+  Availability,
   ConnectorStatus,
+  LibraryStats,
+  LinkStatus,
   LiveResponse,
   Me,
   Page,
+  PlaylistDetail,
+  PlaylistSummary,
   Problem,
   ReadyResponse,
+  SourceInput,
+  Tag,
+  TagWithCount,
   Track,
+  TrackDetail,
+  TrackInput,
+  TrackQuery,
+  TrackSource,
 } from "./types";
 
 export class ApiError extends Error {
@@ -86,31 +98,190 @@ export class ApiClient {
     return this.request("/api/v1/connectors");
   }
 
-  listTracks(params: { q?: string; limit?: number; offset?: number } = {}): Promise<Page<Track>> {
-    const query = new URLSearchParams();
-    if (params.q) query.set("q", params.q);
-    if (params.limit !== undefined) query.set("limit", String(params.limit));
-    if (params.offset !== undefined) query.set("offset", String(params.offset));
-    const qs = query.toString();
-    return this.request(`/api/v1/tracks${qs ? `?${qs}` : ""}`);
+  // --- Statistik ------------------------------------------------------------
+
+  stats(): Promise<LibraryStats> {
+    return this.request("/api/v1/stats");
   }
 
-  createTrack(input: {
-    title: string;
-    artist: string;
-    album?: string | null;
-    duration_ms?: number | null;
-    isrc?: string | null;
-  }): Promise<Track> {
+  // --- Tracks ----------------------------------------------------------------
+
+  listTracks(params: TrackQuery = {}): Promise<Page<Track>> {
+    return this.request(`/api/v1/tracks${trackQueryString(params)}`);
+  }
+
+  getTrack(id: string): Promise<TrackDetail> {
+    return this.request(`/api/v1/tracks/${enc(id)}`);
+  }
+
+  createTrack(input: TrackInput & { sources?: SourceInput[] }): Promise<TrackDetail> {
     return this.request("/api/v1/tracks", { method: "POST", body: JSON.stringify(input) });
   }
 
-  deleteTrack(id: string): Promise<void> {
-    return this.request(`/api/v1/tracks/${encodeURIComponent(id)}`, { method: "DELETE" });
+  updateTrack(id: string, changes: Partial<TrackInput>): Promise<TrackDetail> {
+    return this.request(`/api/v1/tracks/${enc(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(changes),
+    });
+  }
+
+  deleteTrack(id: string, options: { force?: boolean } = {}): Promise<void> {
+    const qs = options.force ? "?force=true" : "";
+    return this.request(`/api/v1/tracks/${enc(id)}${qs}`, { method: "DELETE" });
+  }
+
+  setTrackTags(id: string, tagIds: string[]): Promise<TrackDetail> {
+    return this.request(`/api/v1/tracks/${enc(id)}/tags`, {
+      method: "PUT",
+      body: JSON.stringify({ tag_ids: tagIds }),
+    });
+  }
+
+  addSource(trackId: string, input: SourceInput): Promise<TrackSource> {
+    return this.request(`/api/v1/tracks/${enc(trackId)}/sources`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  updateSource(
+    trackId: string,
+    sourceId: string,
+    changes: { url?: string | null; availability?: Availability; link_status?: LinkStatus },
+  ): Promise<TrackSource> {
+    return this.request(`/api/v1/tracks/${enc(trackId)}/sources/${enc(sourceId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(changes),
+    });
+  }
+
+  deleteSource(trackId: string, sourceId: string): Promise<void> {
+    return this.request(`/api/v1/tracks/${enc(trackId)}/sources/${enc(sourceId)}`, {
+      method: "DELETE",
+    });
+  }
+
+  // --- Tags ------------------------------------------------------------------
+
+  listTags(): Promise<TagWithCount[]> {
+    return this.request("/api/v1/tags");
+  }
+
+  createTag(input: { name: string; category?: string }): Promise<Tag> {
+    return this.request("/api/v1/tags", { method: "POST", body: JSON.stringify(input) });
+  }
+
+  updateTag(id: string, changes: { name?: string; category?: string }): Promise<Tag> {
+    return this.request(`/api/v1/tags/${enc(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(changes),
+    });
+  }
+
+  deleteTag(id: string): Promise<void> {
+    return this.request(`/api/v1/tags/${enc(id)}`, { method: "DELETE" });
+  }
+
+  // --- Playlists -------------------------------------------------------------
+
+  listPlaylists(params: { q?: string; limit?: number; offset?: number } = {}): Promise<
+    Page<PlaylistSummary>
+  > {
+    const query = new URLSearchParams();
+    if (params.q) query.set("q", params.q);
+    query.set("limit", String(params.limit ?? 200));
+    if (params.offset) query.set("offset", String(params.offset));
+    return this.request(`/api/v1/playlists?${query.toString()}`);
+  }
+
+  getPlaylist(id: string): Promise<PlaylistDetail> {
+    return this.request(`/api/v1/playlists/${enc(id)}`);
+  }
+
+  createPlaylist(input: {
+    name: string;
+    description?: string | null;
+    track_ids?: string[];
+  }): Promise<PlaylistDetail> {
+    return this.request("/api/v1/playlists", { method: "POST", body: JSON.stringify(input) });
+  }
+
+  updatePlaylist(
+    id: string,
+    changes: { name?: string; description?: string | null },
+  ): Promise<PlaylistDetail> {
+    return this.request(`/api/v1/playlists/${enc(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(changes),
+    });
+  }
+
+  deletePlaylist(id: string): Promise<void> {
+    return this.request(`/api/v1/playlists/${enc(id)}`, { method: "DELETE" });
+  }
+
+  addToPlaylist(
+    id: string,
+    trackIds: string[],
+    options: { position?: number; skip_existing?: boolean } = {},
+  ): Promise<PlaylistDetail> {
+    return this.request(`/api/v1/playlists/${enc(id)}/items`, {
+      method: "POST",
+      body: JSON.stringify({ track_ids: trackIds, ...options }),
+    });
+  }
+
+  removeFromPlaylist(id: string, itemId: string): Promise<PlaylistDetail> {
+    return this.request(`/api/v1/playlists/${enc(id)}/items/${enc(itemId)}`, {
+      method: "DELETE",
+    });
+  }
+
+  moveInPlaylist(id: string, itemId: string, position: number): Promise<PlaylistDetail> {
+    return this.request(`/api/v1/playlists/${enc(id)}/items/${enc(itemId)}/move`, {
+      method: "POST",
+      body: JSON.stringify({ position }),
+    });
+  }
+
+  reorderPlaylist(id: string, itemIds: string[]): Promise<PlaylistDetail> {
+    return this.request(`/api/v1/playlists/${enc(id)}/items/order`, {
+      method: "PUT",
+      body: JSON.stringify({ item_ids: itemIds }),
+    });
   }
 }
 
-export function formatDuration(ms: number | null): string {
+const enc = encodeURIComponent;
+
+/** Query-String für /tracks; Listen werden als wiederholte Parameter übertragen. */
+export function trackQueryString(params: TrackQuery): string {
+  const query = new URLSearchParams();
+  if (params.q) query.set("q", params.q);
+  for (const p of params.platform ?? []) query.append("platform", p);
+  for (const p of params.missing_platform ?? []) query.append("missing_platform", p);
+  if (params.platform_count !== undefined) query.set("platform_count", String(params.platform_count));
+  for (const t of params.tag ?? []) query.append("tag", t);
+  if (params.has_isrc !== undefined) query.set("has_isrc", String(params.has_isrc));
+  if (params.sort) query.set("sort", params.sort);
+  if (params.order) query.set("order", params.order);
+  if (params.limit !== undefined) query.set("limit", String(params.limit));
+  if (params.offset !== undefined) query.set("offset", String(params.offset));
+  const qs = query.toString();
+  return qs ? `?${qs}` : "";
+}
+
+/** Gesamtdauer lesbar: "3:45", "1:02:10" bzw. "12 Std. 4 Min." ab 10 Stunden. */
+export function formatTotalDuration(ms: number): string {
+  const total = Math.round(ms / 1000);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  if (hours >= 10) return `${hours} Std. ${minutes} Min.`;
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+  return formatDuration(ms);
+}
+
+export function formatDuration(ms: number | null | undefined): string {
   if (!ms) return "–";
   const total = Math.round(ms / 1000);
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;

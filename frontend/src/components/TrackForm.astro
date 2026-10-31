@@ -1,0 +1,62 @@
+---
+// Formularfelder eines Tracks – für "Neuer Track" (Dialog) und die Detailseite.
+interface Props {
+  idPrefix: string;
+  withLinks?: boolean;
+}
+const { idPrefix, withLinks = false } = Astro.props;
+const id = (name: string) => `${idPrefix}-${name}`;
+---
+
+<div class="form-grid">
+  <label class="field span-3 wide-sm" for={id("title")}>
+    Titel
+    <input id={id("title")} name="title" required maxlength="500" autocomplete="off" />
+  </label>
+  <label class="field span-3 wide-sm" for={id("artist")}>
+    Artist
+    <input id={id("artist")} name="artist" required maxlength="500" autocomplete="off" />
+  </label>
+  <label class="field span-3 wide-sm" for={id("version")}>
+    Version / Remix
+    <input id={id("version")} name="version" maxlength="200" placeholder="z. B. Extended Mix" />
+  </label>
+  <label class="field span-3 wide-sm" for={id("album")}>
+    Album
+    <input id={id("album")} name="album" maxlength="500" />
+  </label>
+  <label class="field span-2" for={id("duration")}>
+    Dauer
+    <input id={id("duration")} name="duration" inputmode="numeric" placeholder="m:ss" />
+  </label>
+  <label class="field span-2" for={id("release")}>
+    Veröffentlicht
+    <input id={id("release")} name="release_date" type="date" />
+  </label>
+  <label class="field span-2 wide-sm" for={id("isrc")}>
+    ISRC
+    <input id={id("isrc")} name="isrc" maxlength="15" placeholder="optional" autocapitalize="characters" />
+  </label>
+  {
+    withLinks && (
+      <label class="field span-6" for={id("links")}>
+        Links zu Streamingplattformen
+        <textarea
+          id={id("links")}
+          name="links"
+          rows="3"
+          placeholder="Ein Link pro Zeile, z. B. https://open.spotify.com/track/…"
+        />
+        <span class="hint">Spotify, SoundCloud und YouTube werden automatisch erkannt.</span>
+      </label>
+    )
+  }
+  {
+    !withLinks && (
+      <label class="field span-6" for={id("notes")}>
+        Notizen
+        <textarea id={id("notes")} name="notes" rows="3" maxlength="10000" />
+      </label>
+    )
+  }
+</div>

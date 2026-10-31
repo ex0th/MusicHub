@@ -1,0 +1,309 @@
+---
+import Base from "../../layouts/Base.astro";
+---
+
+<Base title="Einstellungen" section="settings">
+  <div class="page-head">
+    <h1>Einstellungen</h1>
+  </div>
+
+  <div class="settings">
+    <section aria-labelledby="login-title">
+      <h2 id="login-title">Anmeldung</h2>
+      <form class="panel" id="login-form" autocomplete="off">
+        <p class="muted" id="login-state">
+          Gib das Entwicklungs-Token aus <code>MUSICHUB_DEV_AUTH_TOKEN</code> ein. Es bleibt nur in
+          diesem Browser-Tab gespeichert.
+        </p>
+        <div class="inline-form">
+          <label class="visually-hidden" for="token">Token</label>
+          <input id="token" name="token" type="password" placeholder="Token" />
+          <button type="submit">Anmelden</button>
+          <button type="button" class="ghost" id="logout">Abmelden</button>
+        </div>
+        <p class="form-error" id="login-error" role="alert"></p>
+      </form>
+    </section>
+
+    <section aria-labelledby="theme-title">
+      <h2 id="theme-title">Darstellung</h2>
+      <fieldset class="panel theme-choice" id="theme">
+        <legend class="visually-hidden">Farbschema</legend>
+        <label><input type="radio" name="theme" value="dark" /> Dunkel</label>
+        <label><input type="radio" name="theme" value="light" /> Hell</label>
+        <label><input type="radio" name="theme" value="system" /> Wie das System</label>
+      </fieldset>
+    </section>
+
+    <section aria-labelledby="tags-title" id="tags">
+      <h2 id="tags-title">Tags</h2>
+      <p class="muted">Tags ordnest du Tracks in der Track-Ansicht zu. Eine Kategorie gruppiert ähnliche Tags, etwa Genre oder Stimmung.</p>
+      <form class="panel inline-form" id="tag-form" autocomplete="off">
+        <label class="visually-hidden" for="tag-name">Name</label>
+        <input id="tag-name" name="name" required maxlength="100" placeholder="Neuer Tag" />
+        <label class="visually-hidden" for="tag-category">Kategorie</label>
+        <input id="tag-category" name="category" maxlength="50" placeholder="Kategorie (Allgemein)" list="categories" />
+        <datalist id="categories"></datalist>
+        <button type="submit">Tag anlegen</button>
+      </form>
+      <div class="table-wrap tags-table">
+        <table class="data">
+          <thead>
+            <tr><th scope="col">Name</th><th scope="col">Kategorie</th><th scope="col" class="right">Tracks</th><th scope="col"><span class="visually-hidden">Aktionen</span></th></tr>
+          </thead>
+          <tbody id="tag-rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="sys-title">
+      <h2 id="sys-title">System</h2>
+      <dl class="panel sysinfo" id="sysinfo"></dl>
+      <p><a href="/api/docs" target="_blank" rel="noopener">API-Dokumentation öffnen</a></p>
+    </section>
+  </div>
+</Base>
+
+<script>
+  import { createSession } from "../../lib/session";
+  import type { TagWithCount } from "../../lib/types";
+  import { $, confirmDialog, errorMessage, h, toast } from "../../lib/ui";
+
+  const { api, tokens } = createSession();
+
+  // --- Anmeldung --------------------------------------------------------------------
+
+  async function showLogin() {
+    const state = $("#login-state");
+    if (!tokens.getToken()) return;
+    try {
+      const me = await api.me();
+      state.textContent = `Angemeldet als ${me.display_name} (${me.can_write ? "lesen und schreiben" : "nur lesen"}).`;
+    } catch {
+      state.textContent = "Das gespeicherte Token ist ungültig. Bitte erneut anmelden.";
+    }
+  }
+
+  $("#login-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const input = $<HTMLInputElement>("#token");
+    const error = $("#login-error");
+    error.textContent = "";
+    tokens.setToken(input.value.trim() || null);
+    try {
+      await api.me();
+      location.href = "/";
+    } catch (err) {
+      tokens.setToken(null);
+      error.textContent = errorMessage(err);
+    }
+  });
+  $("#logout").addEventListener("click", () => {
+    tokens.setToken(null);
+    location.reload();
+  });
+
+  // --- Farbschema ----------------------------------------------------------------
+
+  const stored = (() => {
+    try {
+      return localStorage.getItem("musichub.theme") ?? "dark";
+    } catch {
+      return "dark";
+    }
+  })();
+  for (const radio of document.querySelectorAll<HTMLInputElement>('input[name="theme"]')) {
+    radio.checked = radio.value === stored;
+    radio.addEventListener("change", () => {
+      try {
+        localStorage.setItem("musichub.theme", radio.value);
+      } catch {
+        /* ohne Storage gilt die Wahl nur bis zum Neuladen */
+      }
+      const light = radio.value === "light" || (radio.value === "system" && matchMedia("(prefers-color-scheme: light)").matches);
+      document.documentElement.dataset["theme"] = light ? "light" : "dark";
+    });
+  }
+
+  // --- Tags ----------------------------------------------------------------------
+
+  function tagRow(tag: TagWithCount) {
+    const name = h("input", { value: tag.name, "aria-label": "Name", maxlength: 100 });
+    const category = h("input", { value: tag.category, "aria-label": "Kategorie", maxlength: 50, list: "categories" });
+    const save = async () => {
+      const changes: { name?: string; category?: string } = {};
+      if (name.value.trim() && name.value.trim() !== tag.name) changes.name = name.value.trim();
+      if (category.value.trim() && category.value.trim() !== tag.category) changes.category = category.value.trim();
+      if (!Object.keys(changes).length) return;
+      try {
+        const updated = await api.updateTag(tag.id, changes);
+        Object.assign(tag, updated);
+        toast("Tag gespeichert.");
+      } catch (e) {
+        toast(errorMessage(e), "error");
+        name.value = tag.name;
+        category.value = tag.category;
+      }
+    };
+    name.addEventListener("change", save);
+    category.addEventListener("change", save);
+    return h(
+      "tr",
+      {},
+      h("td", {}, name),
+      h("td", {}, category),
+      h("td", { class: "right num" }, String(tag.track_count)),
+      h(
+        "td",
+        { class: "right" },
+        h(
+          "button",
+          {
+            type: "button",
+            class: "quiet",
+            onclick: async () => {
+              const ok = await confirmDialog({
+                title: "Tag löschen?",
+                message: tag.track_count
+                  ? `„${tag.name}“ wird von ${tag.track_count} Tracks entfernt. Die Tracks bleiben erhalten.`
+                  : `„${tag.name}“ wird gelöscht.`,
+                confirm: "Tag löschen",
+                danger: true,
+              });
+              if (!ok) return;
+              try {
+                await api.deleteTag(tag.id);
+                loadTags();
+              } catch (e) {
+                toast(errorMessage(e), "error");
+              }
+            },
+          },
+          "Löschen",
+        ),
+      ),
+    );
+  }
+
+  async function loadTags() {
+    const body = $("#tag-rows");
+    try {
+      const tags = await api.listTags();
+      body.replaceChildren(
+        ...(tags.length
+          ? tags.map(tagRow)
+          : [h("tr", {}, h("td", { colspan: 4, class: "empty" }, "Noch keine Tags."))]),
+      );
+      $("#categories").replaceChildren(
+        ...[...new Set(tags.map((t) => t.category))].map((c) => h("option", { value: c })),
+      );
+    } catch (e) {
+      body.replaceChildren(h("tr", {}, h("td", { colspan: 4, class: "empty" }, errorMessage(e))));
+    }
+  }
+
+  const tagForm = $<HTMLFormElement>("#tag-form");
+  tagForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!tagForm.reportValidity()) return;
+    const data = new FormData(tagForm);
+    const category = String(data.get("category") ?? "").trim();
+    try {
+      await api.createTag({ name: String(data.get("name")).trim(), ...(category ? { category } : {}) });
+      tagForm.reset();
+      loadTags();
+    } catch (err) {
+      toast(errorMessage(err), "error");
+    }
+  });
+
+  // --- System --------------------------------------------------------------------
+
+  async function loadSystem() {
+    const box = $("#sysinfo");
+    const entries: [string, string][] = [];
+    try {
+      const live = await api.live();
+      entries.push(["Version", live.version], ["Build", live.build.slice(0, 12)]);
+      const ready = await api.ready();
+      entries.push(
+        ["Datenbank", ready.checks["database"]?.status === "ok" ? "verbunden" : "nicht erreichbar"],
+        ["Schema", ready.checks["migrations"]?.status === "ok" ? "aktuell" : "nicht aktuell"],
+      );
+    } catch {
+      entries.push(["API", "nicht erreichbar"]);
+    }
+    box.replaceChildren(...entries.map(([k, v]) => h("div", {}, h("dt", {}, k), h("dd", {}, v))));
+  }
+
+  showLogin();
+  loadSystem();
+  if (tokens.getToken()) loadTags();
+  else $("#tags").hidden = true;
+</script>
+
+<style is:global>
+  .settings {
+    max-width: 820px;
+  }
+  .inline-form {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .inline-form input {
+    flex: 1 1 200px;
+  }
+  #login-form .form-error {
+    margin-top: 8px;
+  }
+  code {
+    font-size: 0.9em;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: var(--raised);
+  }
+  .theme-choice {
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    margin: 0;
+  }
+  .theme-choice label {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    cursor: pointer;
+  }
+  .theme-choice input {
+    width: auto;
+    min-height: 0;
+    accent-color: var(--accent);
+  }
+  #tag-form {
+    margin-bottom: 12px;
+  }
+  .tags-table td input {
+    min-height: 32px;
+    padding: 5px 8px;
+    background: transparent;
+    border-color: transparent;
+  }
+  .tags-table td input:hover {
+    border-color: var(--line-strong);
+  }
+  .sysinfo {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
+    margin: 0 0 12px;
+  }
+  .sysinfo dt {
+    color: var(--muted);
+    font-size: 0.84rem;
+  }
+  .sysinfo dd {
+    margin: 0;
+    font-weight: 560;
+  }
+</style>

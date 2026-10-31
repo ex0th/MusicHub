@@ -16,13 +16,21 @@ class Platform(StrEnum):
 
 
 class LinkStatus(StrEnum):
+    """Wie sicher gehört eine Quelle zum lokalen Track?"""
+
     #: Bestätigte Zuordnung lokaler Track <-> Plattform-Track.
     LINKED = "linked"
     #: Vorschlag der Matching-Engine, wartet auf Bestätigung.
     CANDIDATE = "candidate"
     #: Vom Nutzer abgelehnter Vorschlag; wird nicht erneut vorgeschlagen.
     REJECTED = "rejected"
-    #: War verknüpft, ist auf der Plattform aber nicht mehr verfügbar.
+
+
+class Availability(StrEnum):
+    """Ist der Plattform-Track (noch) abrufbar? Unabhängig von ``LinkStatus``."""
+
+    UNKNOWN = "unknown"
+    AVAILABLE = "available"
     UNAVAILABLE = "unavailable"
 
 

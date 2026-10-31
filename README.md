@@ -8,9 +8,24 @@ die führende Instanz**: Ein Track existiert auch dann, wenn er auf keiner oder 
 Plattform verfügbar ist. Fällt eine Plattform aus, laufen Sammlung und alle anderen
 Plattformen ungestört weiter.
 
-> **Stand: Etappe 1 – Grundgerüst.** API, Datenbank, Migrationen, Auth (Dev + OIDC-Validierung),
-> Job-Queue, Matching- und Sync-Planung, Frontend-Grundlage und Deployment stehen. Die
-> Plattform-APIs werden in den nächsten Etappen angebunden. Siehe [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Stand: Etappe 2 – Musikbibliothek.** Tracks, Plattform-Quellen, Tags und Playlists lassen
+> sich vollständig in der Weboberfläche und per REST-API verwalten – ganz ohne Plattform-Konten.
+> Links zu Spotify, SoundCloud und YouTube werden beim Einfügen erkannt. Die automatische
+> Anbindung der Plattform-APIs folgt in den nächsten Etappen, siehe [docs/ROADMAP.md](docs/ROADMAP.md).
+
+## Funktionen
+
+- **Dashboard:** Anzahl Tracks und Playlists, Verfügbarkeit je Plattform, Tracks, die nur auf
+  einer Plattform verfügbar sind
+- **Musikbibliothek:** Tabelle mit Suche, Filtern (Plattform, fehlt auf, nur lokal, Tag),
+  Sortierung per Spaltenkopf, Abdeckungsstreifen mit direkten Links zu den Plattformen,
+  neue Tracks samt Links und Tags anlegen
+- **Track-Detail:** alle Angaben bearbeiten, Plattform-Links verknüpfen und als (nicht)
+  verfügbar markieren, Tags, Playlist-Zugehörigkeit
+- **Playlists:** anlegen, umbenennen, Tracks suchen und hinzufügen, per Drag & Drop oder
+  Pfeiltasten umsortieren, entfernen
+- **Plattformen und Einstellungen:** Zahlen je Plattform, Anmeldung, helles/dunkles Schema,
+  Tag-Verwaltung
 
 ## Inhalt
 
@@ -98,7 +113,7 @@ docker compose exec db pg_dump -U musichub -Fc musichub > musichub-$(date +%F).d
 docker compose -f compose.dev.yaml up --build
 ```
 
-- Frontend: <http://localhost:4321> – auf der Übersicht mit dem Token
+- Frontend: <http://localhost:4321> – unter *Einstellungen* mit dem Token
   `local-dev-token-change-me` anmelden (oder eigenes `MUSICHUB_DEV_AUTH_TOKEN` in `.env`)
 - API und Swagger-UI: <http://localhost:8000/api/docs>
 - PostgreSQL: `localhost:5432`, Benutzer/Passwort `musichub`

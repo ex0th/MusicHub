@@ -25,6 +25,10 @@ Instanz**, Playlists werden von dort nach Spotify, SoundCloud und YouTube synchr
 7. **Schemaänderung = Modell + Alembic-Migration im selben Commit.** CI führt
    `alembic check` aus.
 8. **Matching und Sync bleiben reine Funktionen** (kein I/O) – I/O gehört in Jobs/Services.
+9. **„Verfügbar auf Plattform“ nur über `library/queries.py`** definieren
+   (bestätigt + nicht unverfügbar) – nicht an anderer Stelle nachbauen.
+10. **Playlist-Positionen nur über `library/playlists.py` ändern** (Sperre, lückenlose
+    Nummerierung). Nie `position` direkt setzen.
 
 ## Struktur
 
@@ -35,20 +39,27 @@ backend/
     serve.py           Container-Start: DB abwarten, migrieren, uvicorn
     core/              config (Settings), logging, errors (RFC 9457), middleware (Request-ID)
     auth/              Principal, Verifier (dev, oidc), Dependencies
-    domain/types.py    Platform, LinkStatus, MatchMethod, JobStatus
+    domain/            types.py (Platform, LinkStatus, Availability, MatchMethod, JobStatus),
+                       platform_urls.py (Links erkennen/erzeugen, ohne Netzwerk)
     db/                Engine/Session, Basis-Modell, Migrations-Status, migrate (Advisory-Lock)
     models/            SQLAlchemy-Modelle (library.py, job.py) – in models/__init__ exportieren
-    migrations/        Alembic (env.py, versions/0001_…)
-    api/               schemas.py (Pydantic), routes/ (health, system, tracks)
+    migrations/        Alembic (env.py, versions/0001_…, 0002_bibliothek)
+    api/               schemas.py (Pydantic), routes/ (health, system, tracks, playlists, tags)
+    library/           Fachlogik: tracks, sources, tags, playlists, stats, queries
     connectors/        base.py (Schnittstelle, DTOs, Fehler), platforms.py, registry.py
     matching/engine.py Score-Berechnung
     sync/engine.py     plan_playlist_sync
     jobs/              queue.py, handlers.py (@handler), worker.py
   tests/               pytest; DB-Tests mit @pytest.mark.db
 frontend/
-  src/lib/             api.ts (Client), auth.ts (TokenProvider), types.ts, session.ts
-  src/pages/           index.astro (Übersicht), library.astro (Sammlung)
-  src/layouts/         Base.astro (Layout + globale Styles)
+  src/lib/             api.ts (Client), types.ts, auth.ts, session.ts, ui.ts (h(), Toast,
+                       Dialog, Abdeckungsstreifen), platforms.ts, forms.ts
+  src/pages/           index (Dashboard), library/, track/?id=, playlists/, playlist/?id=,
+                       platforms/, settings/
+  src/layouts/         Base.astro (Navigation)
+  src/components/      TrackForm.astro
+  src/styles/          global.css (Tokens, Komponenten-Styles)
+  public/theme.js      Farbschema vor dem ersten Rendern
   nginx/               nginx-Konfiguration (statisch + /api-Proxy)
 compose.yaml           Betrieb/Arcane (GHCR-Images)
 compose.dev.yaml       Entwicklung (Build, Hot Reload)
@@ -96,7 +107,12 @@ docker compose -f compose.dev.yaml up --build
   Frameworks ohne Grund (React nur, wenn eine Komponente echten Zustand braucht).
   API-Zugriff nur über `ApiClient`; Typen in `lib/types.ts` mit `api/schemas.py` synchron halten.
   Dynamisch erzeugte DOM-Elemente bekommen kein Astro-Scope-Attribut → Styles dafür
-  über `:global(...)` unter einer Wrapper-Klasse.
+  in `styles/global.css` oder `<style is:global>` mit eindeutigen Klassen.
+  DOM nur über `h()` aus `lib/ui.ts` bauen (setzt Text sicher), kein `innerHTML`.
+  IDs in Seiten und `TrackForm` (`<prefix>-<feld>`) dürfen nicht kollidieren.
+- **Design:** dunkles Schema ist Standard, Akzent `#FF8000` nur für Aktionen, aktive
+  Navigation, Fokus und „nur hier“-Hervorhebung. Labels in Satzschreibung, keine
+  Großbuchstaben-Labels, keine Plattform-Logos (Kürzel Sp/SC/YT im Abdeckungsstreifen).
 - **Abhängigkeiten:** sparsam. Neue Pakete begründen; kein Redis/Celery, die Job-Queue
   liegt bewusst in PostgreSQL.
 - **Tests:** Jede neue Logik mit Tests. Connectoren gegen aufgezeichnete Antworten testen,

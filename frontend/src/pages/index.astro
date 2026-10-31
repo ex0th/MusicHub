@@ -1,208 +1,245 @@
 ---
 import Base from "../layouts/Base.astro";
-
-const platforms = [
-  { id: "spotify", name: "Spotify" },
-  { id: "soundcloud", name: "SoundCloud" },
-  { id: "youtube", name: "YouTube" },
-];
 ---
 
-<Base title="Übersicht" active="overview">
-  <h1>Übersicht</h1>
-  <p class="lede">
-    Zustand der Instanz und der Plattform-Connectoren. Fällt eine Plattform aus, bleiben die
-    Sammlung und alle anderen Plattformen nutzbar.
-  </p>
+<Base title="Dashboard" section="dashboard">
+  <div id="content">
+    <div class="page-head">
+      <div>
+        <h1 id="headline">Dashboard</h1>
+        <p class="lede" id="summary">Lade Bibliothek …</p>
+      </div>
+      <a class="button" href="/library/?new=1">Track hinzufügen</a>
+    </div>
 
-  <h2>System</h2>
-  <div class="grid">
-    <div class="panel stat">
-      <span class="label">API</span>
-      <span class="value"><span class="dot" id="api-dot"></span><span id="api-value">prüfe …</span></span>
-      <span class="sub mono" id="api-sub"></span>
-    </div>
-    <div class="panel stat">
-      <span class="label">Datenbank</span>
-      <span class="value"><span class="dot" id="db-dot"></span><span id="db-value">prüfe …</span></span>
-      <span class="sub" id="db-sub"></span>
-    </div>
-    <div class="panel stat">
-      <span class="label">Migrationen</span>
-      <span class="value"><span class="dot" id="mig-dot"></span><span id="mig-value">prüfe …</span></span>
-      <span class="sub" id="mig-sub"></span>
-    </div>
-  </div>
+    <section aria-labelledby="coverage-title">
+      <h2 id="coverage-title">Verfügbarkeit nach Plattform</h2>
+      <div class="panel coverage-board" id="coverage-board"></div>
+    </section>
 
-  <h2>Anmeldung</h2>
-  <form class="panel login" id="login-form" autocomplete="off">
-    <p>
-      Entwicklungsmodus: Token aus <code class="mono">MUSICHUB_DEV_AUTH_TOKEN</code> eingeben. Es
-      wird nur in diesem Browser-Tab gehalten. Mit Authentik ersetzt ein Login-Button dieses Feld.
-    </p>
-    <div class="row">
-      <label class="visually-hidden" for="token">Entwicklungs-Token</label>
-      <input id="token" name="token" type="password" placeholder="Entwicklungs-Token" />
-      <button type="submit">Anmelden</button>
-      <button type="button" class="ghost" id="logout">Abmelden</button>
-    </div>
-    <p class="feedback" id="login-feedback" role="status"></p>
-  </form>
-
-  <h2>Plattformen</h2>
-  <div class="grid" id="connectors">
-    {
-      platforms.map((p) => (
-        <div class="panel connector" data-platform={p.id}>
-          <span class="name">{p.name}</span>
-          <span class="state">
-            <span class="dot" />
-            <span class="state-text">Anmeldung nötig</span>
-          </span>
-          <span class="sub" />
-        </div>
-      ))
-    }
+    <section aria-labelledby="single-title">
+      <div class="section-head">
+        <h2 id="single-title">Nur auf einer Plattform verfügbar</h2>
+        <a id="single-all" class="muted" href="/library/?count=1" hidden>Alle anzeigen</a>
+      </div>
+      <p class="muted section-note">
+        Fällt diese eine Plattform weg, ist der Track nur noch lokal verzeichnet.
+      </p>
+      <div id="single-list"></div>
+    </section>
   </div>
 </Base>
 
 <script>
-  import { ApiError } from "../lib/api";
-  import { createSession } from "../lib/session";
-  import type { ConnectorState } from "../lib/types";
+  import { formatDuration } from "../lib/api";
+  import { PLATFORMS } from "../lib/platforms";
+  import { createSession, requireLogin } from "../lib/session";
+  import type { LibraryStats, Track } from "../lib/types";
+  import { $, coverageStrip, errorMessage, h, plural } from "../lib/ui";
 
   const { api, tokens } = createSession();
-  const $ = (id: string) => document.getElementById(id) as HTMLElement;
+  const content = $("#content");
 
-  function setCheck(prefix: string, ok: boolean, value: string, sub = "") {
-    $(`${prefix}-dot`).dataset["state"] = ok ? "ok" : "error";
-    $(`${prefix}-value`).textContent = value;
-    $(`${prefix}-sub`).textContent = sub;
+  function row(
+    label: string,
+    count: number,
+    total: number,
+    href: string,
+    detail: (HTMLElement | string)[],
+    exclusive = 0,
+  ) {
+    const pct = total ? (count / total) * 100 : 0;
+    const exPct = total ? (exclusive / total) * 100 : 0;
+    return h(
+      "a",
+      { class: "cov-row", href },
+      h("span", { class: "cov-label" }, label),
+      h(
+        "span",
+        { class: "cov-bar", "aria-hidden": "true" },
+        h("span", { class: "cov-fill", style: `width:${pct}%` }),
+        exclusive ? h("span", { class: "cov-excl", style: `width:${exPct}%` }) : null,
+      ),
+      h("span", { class: "cov-count num" }, count.toLocaleString("de-DE")),
+      h("span", { class: "cov-detail" }, ...detail),
+    );
   }
 
-  async function loadHealth() {
-    try {
-      const live = await api.live();
-      setCheck("api", true, "erreichbar", `v${live.version} · ${live.build.slice(0, 7)}`);
-    } catch {
-      setCheck("api", false, "nicht erreichbar");
-      setCheck("db", false, "unbekannt");
-      setCheck("mig", false, "unbekannt");
+  function renderStats(stats: LibraryStats) {
+    $("#headline").textContent =
+      stats.tracks === 0 ? "Noch keine Tracks" : plural(stats.tracks, "Track", "Tracks");
+    $("#summary").textContent =
+      stats.tracks === 0
+        ? "Lege deinen ersten Track an. Plattform-Links kannst du jederzeit ergänzen."
+        : `In ${plural(stats.playlists, "Playlist", "Playlists")} organisiert, ${plural(
+            stats.tags,
+            "Tag",
+            "Tags",
+          )} vergeben. ${stats.local_only.toLocaleString("de-DE")} davon sind auf keiner Plattform verfügbar.`;
+
+    const board = $("#coverage-board");
+    board.replaceChildren(
+      ...PLATFORMS.map((p) => {
+        const s = stats.platforms.find((x) => x.platform === p.id);
+        const detail: (HTMLElement | string)[] = [];
+        if (s?.exclusive) detail.push(h("span", { class: "excl-note" }, `${s.exclusive} nur hier`));
+        if (s?.unavailable) detail.push(h("span", { class: "gone-note" }, `${s.unavailable} nicht mehr verfügbar`));
+        return row(
+          p.label,
+          s?.tracks ?? 0,
+          stats.tracks,
+          `/library/?platform=${p.id}`,
+          detail,
+          s?.exclusive ?? 0,
+        );
+      }),
+      row("Nur lokal", stats.local_only, stats.tracks, "/library/?count=0", []),
+    );
+    if (stats.single_platform > 0) {
+      const link = $<HTMLAnchorElement>("#single-all");
+      link.hidden = false;
+      link.textContent = `Alle ${stats.single_platform.toLocaleString("de-DE")} anzeigen`;
+    }
+  }
+
+  function renderSingle(tracks: Track[]) {
+    const list = $("#single-list");
+    if (!tracks.length) {
+      list.replaceChildren(h("p", { class: "empty panel" }, "Kein Track hängt an nur einer Plattform."));
       return;
     }
-    const ready = await api.ready();
-    const db = ready.checks["database"];
-    const mig = ready.checks["migrations"];
-    setCheck("db", db?.status === "ok", db?.status === "ok" ? "verbunden" : "Fehler", db?.detail ?? "");
-    if (mig) setCheck("mig", mig.status === "ok", mig.status === "ok" ? "aktuell" : "veraltet", mig.detail ?? "");
-    else setCheck("mig", false, "unbekannt");
+    const body = h("tbody");
+    for (const t of tracks) {
+      body.append(
+        h(
+          "tr",
+          {},
+          h(
+            "td",
+            { class: "t-title" },
+            h("a", { href: `/track/?id=${t.id}` }, t.title),
+            h("span", { class: "t-sub" }, t.artist),
+          ),
+          h("td", { class: "hide-sm" }, t.artist),
+          h("td", { class: "hide-sm version" }, t.version ?? ""),
+          h("td", { class: "right num hide-sm" }, formatDuration(t.duration_ms)),
+          h("td", { class: "right" }, coverageStrip(t)),
+        ),
+      );
+    }
+    list.replaceChildren(h("div", { class: "table-wrap" }, h("table", { class: "data" }, body)));
   }
 
-  const stateLabel: Record<ConnectorState, string> = {
-    ready: "bereit",
-    not_configured: "nicht konfiguriert",
-    degraded: "gestört",
-    suspended: "ausgesetzt",
-  };
-
-  async function loadConnectors() {
-    if (!tokens.getToken()) return;
+  async function load() {
+    if (!requireLogin(tokens, content)) return;
     try {
-      for (const c of await api.connectors()) {
-        const card = document.querySelector<HTMLElement>(`[data-platform="${c.platform}"]`);
-        if (!card) continue;
-        (card.querySelector(".dot") as HTMLElement).dataset["state"] = c.state;
-        (card.querySelector(".state-text") as HTMLElement).textContent = stateLabel[c.state];
-        (card.querySelector(".sub") as HTMLElement).textContent =
-          c.last_error ?? (c.capabilities.length ? c.capabilities.join(" · ") : "");
-      }
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 401) {
-        $("login-feedback").textContent = "Token ungültig – bitte neu anmelden.";
-      }
+      const [stats, single] = await Promise.all([
+        api.stats(),
+        api.listTracks({ platform_count: 1, sort: "updated_at", order: "desc", limit: 8 }),
+      ]);
+      renderStats(stats);
+      renderSingle(single.items);
+    } catch (e) {
+      content.replaceChildren(h("div", { class: "notice" }, h("p", {}, errorMessage(e))));
     }
   }
 
-  $("login-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const input = $("token") as HTMLInputElement;
-    const feedback = $("login-feedback");
-    tokens.setToken(input.value.trim() || null);
-    try {
-      const me = await api.me();
-      feedback.textContent = `Angemeldet als ${me.display_name} (${me.can_write ? "Lesen und Schreiben" : "nur Lesen"}).`;
-      feedback.classList.remove("error-text");
-      input.value = "";
-      window.location.reload();
-    } catch (error) {
-      tokens.setToken(null);
-      feedback.textContent = error instanceof ApiError ? error.message : "API nicht erreichbar.";
-      feedback.classList.add("error-text");
-    }
-  });
-
-  $("logout").addEventListener("click", () => {
-    tokens.setToken(null);
-    window.location.reload();
-  });
-
-  loadHealth();
-  loadConnectors();
+  load();
 </script>
 
-<style>
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+<style is:global>
+  .section-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
     gap: 12px;
   }
-  .stat,
-  .connector {
+  .section-note {
+    margin-top: -6px;
+    font-size: 0.9rem;
+  }
+  .coverage-board {
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    min-height: 104px;
+    padding: 6px 0;
   }
-  .label,
-  .name {
-    font-size: 0.82rem;
+  .cov-row {
+    display: grid;
+    grid-template-columns: 120px 1fr 64px minmax(0, 220px);
+    align-items: center;
+    gap: 16px;
+    padding: 12px 20px;
+    text-decoration: none;
+  }
+  .cov-row:hover {
+    background: var(--raised);
+  }
+  .cov-row + .cov-row {
+    border-top: 1px solid var(--line);
+  }
+  .cov-row:last-child .cov-label {
     color: var(--muted);
   }
-  .name {
-    color: var(--ink);
-    font-weight: 600;
-    font-size: 1rem;
+  .cov-label {
+    font-weight: 560;
   }
-  .value {
-    font-size: 1.15rem;
-    font-weight: 600;
-  }
-  .sub {
-    font-size: 0.8rem;
-    color: var(--muted);
-    overflow-wrap: anywhere;
-  }
-  .login p {
-    margin: 0 0 12px;
-    color: var(--muted);
-  }
-  .login .row {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-  .login input {
-    flex: 1 1 220px;
-  }
-  .login .feedback {
-    margin: 10px 0 0;
-    min-height: 1.5em;
-  }
-  .visually-hidden {
-    position: absolute;
-    width: 1px;
-    height: 1px;
+  .cov-bar {
+    position: relative;
+    height: 8px;
+    border-radius: 4px;
+    background: var(--raised);
     overflow: hidden;
-    clip-path: inset(50%);
+  }
+  .cov-fill,
+  .cov-excl {
+    position: absolute;
+    inset: 0 auto 0 0;
+    border-radius: 4px;
+  }
+  .cov-fill {
+    background: var(--ink);
+    opacity: 0.8;
+  }
+  .cov-excl {
+    background: var(--accent);
+  }
+  .cov-count {
+    text-align: right;
+    font-weight: 600;
+  }
+  .cov-detail {
+    display: flex;
+    gap: 12px;
+    font-size: 0.84rem;
+    color: var(--muted);
+  }
+  .excl-note::before {
+    content: "";
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 6px;
+    border-radius: 2px;
+    background: var(--accent);
+  }
+  .gone-note {
+    color: var(--danger);
+  }
+  @media (max-width: 720px) {
+    .cov-row {
+      grid-template-columns: 1fr auto;
+      gap: 6px 12px;
+      padding: 12px 16px;
+    }
+    .cov-bar {
+      grid-column: 1 / -1;
+      grid-row: 2;
+    }
+    .cov-detail {
+      grid-column: 1 / -1;
+    }
+    .cov-detail:empty {
+      display: none;
+    }
   }
 </style>

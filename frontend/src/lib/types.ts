@@ -3,6 +3,9 @@
 
 export type Platform = "spotify" | "soundcloud" | "youtube";
 export type ConnectorState = "not_configured" | "ready" | "degraded" | "suspended";
+export type LinkStatus = "linked" | "candidate" | "rejected";
+export type Availability = "unknown" | "available" | "unavailable";
+export type MatchMethod = "manual" | "isrc" | "fuzzy" | "import";
 
 export interface LiveResponse {
   status: "ok";
@@ -37,14 +40,29 @@ export interface ConnectorStatus {
   suspended_for_seconds: number | null;
 }
 
-export interface PlatformLink {
+export interface Tag {
   id: string;
+  name: string;
+  category: string;
+}
+
+export interface TagWithCount extends Tag {
+  track_count: number;
+}
+
+export interface TrackSource {
+  id: string;
+  track_id: string;
   platform: Platform;
   external_id: string;
   url: string | null;
-  status: "linked" | "candidate" | "rejected" | "unavailable";
-  match_method: "manual" | "isrc" | "fuzzy" | "import";
+  link_status: LinkStatus;
+  availability: Availability;
+  match_method: MatchMethod;
   match_score: number | null;
+  last_checked_at: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface Track {
@@ -52,12 +70,70 @@ export interface Track {
   title: string;
   artist: string;
   album: string | null;
+  version: string | null;
   duration_ms: number | null;
   isrc: string | null;
+  release_date: string | null;
   notes: string | null;
   created_at: string;
   updated_at: string;
-  links: PlatformLink[];
+  sources: TrackSource[];
+  tags: Tag[];
+  /** Plattformen mit bestätigter, nicht unverfügbarer Quelle */
+  platforms: Platform[];
+}
+
+export interface PlaylistRef {
+  id: string;
+  name: string;
+  occurrences: number;
+}
+
+export interface TrackDetail extends Track {
+  playlists: PlaylistRef[];
+}
+
+export interface TrackInput {
+  title: string;
+  artist: string;
+  album?: string | null;
+  version?: string | null;
+  duration_ms?: number | null;
+  isrc?: string | null;
+  release_date?: string | null;
+  notes?: string | null;
+  tag_ids?: string[];
+}
+
+export interface SourceInput {
+  url?: string | null;
+  platform?: Platform;
+  external_id?: string | null;
+  availability?: Availability;
+  link_status?: LinkStatus;
+}
+
+export type TrackSort =
+  | "title"
+  | "artist"
+  | "album"
+  | "version"
+  | "duration"
+  | "release_date"
+  | "created_at"
+  | "updated_at";
+
+export interface TrackQuery {
+  q?: string;
+  platform?: Platform[];
+  missing_platform?: Platform[];
+  platform_count?: number;
+  tag?: string[];
+  has_isrc?: boolean;
+  sort?: TrackSort;
+  order?: "asc" | "desc";
+  limit?: number;
+  offset?: number;
 }
 
 export interface Page<T> {
@@ -65,6 +141,43 @@ export interface Page<T> {
   total: number;
   limit: number;
   offset: number;
+}
+
+export interface PlaylistSummary {
+  id: string;
+  name: string;
+  description: string | null;
+  item_count: number;
+  total_duration_ms: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PlaylistItem {
+  id: string;
+  position: number;
+  added_at: string;
+  track: Track;
+}
+
+export interface PlaylistDetail extends PlaylistSummary {
+  items: PlaylistItem[];
+}
+
+export interface PlatformStats {
+  platform: Platform;
+  tracks: number;
+  exclusive: number;
+  unavailable: number;
+}
+
+export interface LibraryStats {
+  tracks: number;
+  playlists: number;
+  tags: number;
+  local_only: number;
+  single_platform: number;
+  platforms: PlatformStats[];
 }
 
 /** RFC 9457 Problem Details, wie sie das Backend liefert. */
@@ -76,4 +189,5 @@ export interface Problem {
   detail: string;
   request_id: string | null;
   errors?: { loc: (string | number)[]; msg: string; type: string }[];
+  [extra: string]: unknown;
 }

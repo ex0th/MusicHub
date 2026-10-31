@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
+from sqlalchemy.orm import Session
 
-from musichub.api.schemas import ConnectorStatusOut, MeResponse
+from musichub.api.schemas import ConnectorStatusOut, LibraryStats, MeResponse
 from musichub.auth import Principal, current_principal
 from musichub.connectors.registry import ConnectorRegistry
+from musichub.db.session import get_db
+from musichub.library.stats import library_stats
 
 router = APIRouter(prefix="/api/v1", tags=["system"])
 
@@ -40,3 +43,8 @@ def connectors(
         )
         for s in registry.status()
     ]
+
+
+@router.get("/stats", response_model=LibraryStats, summary="Kennzahlen der Bibliothek")
+def stats(db: Session = Depends(get_db), _: Principal = Depends(current_principal)) -> LibraryStats:
+    return library_stats(db)

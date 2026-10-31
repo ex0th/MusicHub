@@ -1,0 +1,418 @@
+---
+import TrackForm from "../../components/TrackForm.astro";
+import Base from "../../layouts/Base.astro";
+---
+
+<Base title="Musikbibliothek" section="library">
+  <div class="page-head">
+    <div>
+      <h1>Musikbibliothek</h1>
+      <p class="lede" id="count">&nbsp;</p>
+    </div>
+    <button type="button" id="open-new">Track hinzufügen</button>
+  </div>
+
+  <div id="content">
+    <form class="toolbar" id="filters" role="search" autocomplete="off">
+      <label class="field grow">
+        <span class="visually-hidden">Suche</span>
+        <input type="search" name="q" placeholder="Titel, Artist, Album, Version oder ISRC" />
+      </label>
+      <label class="field">
+        <span class="visually-hidden">Verfügbarkeit</span>
+        <select name="availability">
+          <option value="">Alle Plattformen</option>
+          <optgroup label="Verfügbar auf">
+            <option value="on:spotify">Auf Spotify</option>
+            <option value="on:soundcloud">Auf SoundCloud</option>
+            <option value="on:youtube">Auf YouTube</option>
+          </optgroup>
+          <optgroup label="Fehlt auf">
+            <option value="missing:spotify">Fehlt auf Spotify</option>
+            <option value="missing:soundcloud">Fehlt auf SoundCloud</option>
+            <option value="missing:youtube">Fehlt auf YouTube</option>
+          </optgroup>
+          <optgroup label="Anzahl">
+            <option value="count:0">Nur lokal</option>
+            <option value="count:1">Genau eine Plattform</option>
+            <option value="count:3">Auf allen Plattformen</option>
+          </optgroup>
+        </select>
+      </label>
+      <label class="field">
+        <span class="visually-hidden">Tag</span>
+        <select name="tag"><option value="">Alle Tags</option></select>
+      </label>
+      <label class="field sort-select">
+        <span class="visually-hidden">Sortierung</span>
+        <select name="sortkey">
+          <option value="artist:asc">Artist A–Z</option>
+          <option value="title:asc">Titel A–Z</option>
+          <option value="duration:desc">Längste zuerst</option>
+          <option value="created_at:desc">Zuletzt hinzugefügt</option>
+          <option value="updated_at:desc">Zuletzt geändert</option>
+          <option value="release_date:desc">Neueste Veröffentlichung</option>
+        </select>
+      </label>
+      <button type="button" class="quiet" id="reset" hidden>Filter zurücksetzen</button>
+    </form>
+
+    <div class="table-wrap">
+      <table class="data">
+        <thead>
+          <tr>
+            <th scope="col" data-sort="title"><button type="button" class="sort">Track</button></th>
+            <th scope="col" class="hide-sm" data-sort="artist"><button type="button" class="sort">Artist</button></th>
+            <th scope="col" class="hide-sm" data-sort="version"><button type="button" class="sort">Version</button></th>
+            <th scope="col" class="right hide-sm" data-sort="duration"><button type="button" class="sort">Dauer</button></th>
+            <th scope="col" class="right">Plattformen</th>
+          </tr>
+        </thead>
+        <tbody id="rows"><tr><td colspan="5" class="empty">Lade …</td></tr></tbody>
+      </table>
+    </div>
+    <div class="pager" id="pager" hidden>
+      <span id="range"></span>
+      <span class="actions">
+        <button type="button" class="ghost" id="prev">Zurück</button>
+        <button type="button" class="ghost" id="next">Weiter</button>
+      </span>
+    </div>
+  </div>
+
+  <dialog id="new-dialog" aria-labelledby="new-dialog-title">
+    <form id="new-form" method="dialog" novalidate>
+      <h2 id="new-dialog-title">Neuer Track</h2>
+      <TrackForm idPrefix="new" withLinks />
+      <div class="field tag-picker">
+        <span>Tags</span>
+        <div class="chips" id="new-tags"></div>
+      </div>
+      <p class="form-error" id="new-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" class="ghost" id="new-cancel">Abbrechen</button>
+        <button type="submit">Track speichern</button>
+      </div>
+    </form>
+  </dialog>
+</Base>
+
+<script>
+  import { formatDuration } from "../../lib/api";
+  import { readLinks, readTrackForm } from "../../lib/forms";
+  import { createSession, requireLogin } from "../../lib/session";
+  import type { Platform, TagWithCount, Track, TrackQuery, TrackSort } from "../../lib/types";
+  import { $, coverageStrip, errorMessage, h, plural, toast } from "../../lib/ui";
+
+  const PAGE_SIZE = 50;
+  const { api, tokens } = createSession();
+  const filters = $<HTMLFormElement>("#filters");
+  const rows = $<HTMLTableSectionElement>("#rows");
+  const field = <T extends HTMLElement>(name: string) => filters.elements.namedItem(name) as unknown as T;
+
+  // --- Zustand <-> URL ----------------------------------------------------------
+
+  interface State {
+    q: string;
+    availability: string;
+    tag: string;
+    sort: TrackSort;
+    order: "asc" | "desc";
+    page: number;
+  }
+
+  function readState(): State {
+    const p = new URLSearchParams(location.search);
+    let availability = "";
+    if (p.get("platform")) availability = `on:${p.get("platform")}`;
+    else if (p.get("missing")) availability = `missing:${p.get("missing")}`;
+    else if (p.get("count")) availability = `count:${p.get("count")}`;
+    return {
+      q: p.get("q") ?? "",
+      availability,
+      tag: p.get("tag") ?? "",
+      sort: (p.get("sort") as TrackSort | null) ?? "artist",
+      order: p.get("order") === "desc" ? "desc" : "asc",
+      page: Math.max(1, Number(p.get("page")) || 1),
+    };
+  }
+
+  function writeState(s: State) {
+    const p = new URLSearchParams();
+    if (s.q) p.set("q", s.q);
+    const [kind, value] = s.availability.split(":");
+    if (kind === "on" && value) p.set("platform", value);
+    if (kind === "missing" && value) p.set("missing", value);
+    if (kind === "count" && value) p.set("count", value);
+    if (s.tag) p.set("tag", s.tag);
+    if (s.sort !== "artist" || s.order !== "asc") {
+      p.set("sort", s.sort);
+      p.set("order", s.order);
+    }
+    if (s.page > 1) p.set("page", String(s.page));
+    const qs = p.toString();
+    history.replaceState(null, "", qs ? `?${qs}` : location.pathname);
+  }
+
+  function toQuery(s: State): TrackQuery {
+    const query: TrackQuery = {
+      sort: s.sort,
+      order: s.order,
+      limit: PAGE_SIZE,
+      offset: (s.page - 1) * PAGE_SIZE,
+    };
+    if (s.q) query.q = s.q;
+    const [kind, value] = s.availability.split(":");
+    if (kind === "on") query.platform = [value as Platform];
+    if (kind === "missing") query.missing_platform = [value as Platform];
+    if (kind === "count") query.platform_count = Number(value);
+    if (s.tag) query.tag = [s.tag];
+    return query;
+  }
+
+  let state = readState();
+
+  function syncControls() {
+    field<HTMLInputElement>("q").value = state.q;
+    field<HTMLSelectElement>("availability").value = state.availability;
+    field<HTMLSelectElement>("tag").value = state.tag;
+    const sortSelect = field<HTMLSelectElement>("sortkey");
+    sortSelect.value = `${state.sort}:${state.order}`;
+    if (sortSelect.value === "") sortSelect.selectedIndex = 0;
+    for (const th of document.querySelectorAll<HTMLElement>("th[data-sort]")) {
+      if (th.dataset["sort"] === state.sort) {
+        th.setAttribute("aria-sort", state.order === "asc" ? "ascending" : "descending");
+      } else th.removeAttribute("aria-sort");
+    }
+    $("#reset").hidden = !(state.q || state.availability || state.tag);
+  }
+
+  // --- Darstellung --------------------------------------------------------------
+
+  function message(text: string) {
+    rows.replaceChildren(h("tr", {}, h("td", { colspan: 5, class: "empty" }, text)));
+  }
+
+  function render(tracks: Track[]) {
+    if (!tracks.length) {
+      const filtered = state.q || state.availability || state.tag;
+      return message(filtered ? "Keine Tracks passen zu diesen Filtern." : "Noch keine Tracks. Lege mit „Track hinzufügen“ den ersten an.");
+    }
+    rows.replaceChildren(
+      ...tracks.map((t) => {
+        const href = `/track/?id=${t.id}`;
+        const row = h(
+          "tr",
+          { class: "link-row" },
+          h(
+            "td",
+            { class: "t-title" },
+            h("a", { href }, t.title),
+            h("span", { class: "t-sub" }, t.version ? `${t.artist} – ${t.version}` : t.artist),
+          ),
+          h("td", { class: "hide-sm" }, t.artist),
+          h("td", { class: "hide-sm version" }, t.version ?? ""),
+          h("td", { class: "right num hide-sm" }, formatDuration(t.duration_ms)),
+          h("td", { class: "right" }, coverageStrip(t)),
+        );
+        // Ganze Zeile klickbar, Links im Abdeckungsstreifen behalten ihr Ziel
+        row.addEventListener("click", (event) => {
+          if ((event.target as HTMLElement).closest("a")) return;
+          location.href = href;
+        });
+        return row;
+      }),
+    );
+  }
+
+  let requestId = 0;
+  async function load() {
+    writeState(state);
+    syncControls();
+    const current = ++requestId;
+    try {
+      const page = await api.listTracks(toQuery(state));
+      if (current !== requestId) return; // veraltete Antwort
+      render(page.items);
+      $("#count").textContent = plural(page.total, "Track", "Tracks");
+      const pager = $("#pager");
+      pager.hidden = page.total <= PAGE_SIZE;
+      const from = page.total ? page.offset + 1 : 0;
+      const to = page.offset + page.items.length;
+      $("#range").textContent = `${from}–${to} von ${page.total.toLocaleString("de-DE")}`;
+      $<HTMLButtonElement>("#prev").disabled = state.page <= 1;
+      $<HTMLButtonElement>("#next").disabled = to >= page.total;
+    } catch (e) {
+      message(errorMessage(e));
+    }
+  }
+
+  // --- Ereignisse ---------------------------------------------------------------
+
+  let debounce: number | undefined;
+  field<HTMLInputElement>("q").addEventListener("input", (e) => {
+    window.clearTimeout(debounce);
+    debounce = window.setTimeout(() => {
+      state = { ...state, q: (e.target as HTMLInputElement).value.trim(), page: 1 };
+      load();
+    }, 250);
+  });
+  filters.addEventListener("submit", (e) => e.preventDefault());
+  field<HTMLSelectElement>("availability").addEventListener("change", (e) => {
+    state = { ...state, availability: (e.target as HTMLSelectElement).value, page: 1 };
+    load();
+  });
+  field<HTMLSelectElement>("tag").addEventListener("change", (e) => {
+    state = { ...state, tag: (e.target as HTMLSelectElement).value, page: 1 };
+    load();
+  });
+  field<HTMLSelectElement>("sortkey").addEventListener("change", (e) => {
+    const [sort, order] = (e.target as HTMLSelectElement).value.split(":");
+    state = { ...state, sort: sort as TrackSort, order: order === "desc" ? "desc" : "asc", page: 1 };
+    load();
+  });
+  for (const th of document.querySelectorAll<HTMLElement>("th[data-sort]")) {
+    th.querySelector("button")?.addEventListener("click", () => {
+      const sort = th.dataset["sort"] as TrackSort;
+      const order = state.sort === sort && state.order === "asc" ? "desc" : "asc";
+      state = { ...state, sort, order, page: 1 };
+      load();
+    });
+  }
+  $("#reset").addEventListener("click", () => {
+    state = { ...state, q: "", availability: "", tag: "", page: 1 };
+    load();
+  });
+  $("#prev").addEventListener("click", () => {
+    state = { ...state, page: state.page - 1 };
+    load();
+  });
+  $("#next").addEventListener("click", () => {
+    state = { ...state, page: state.page + 1 };
+    load();
+  });
+
+  // --- Neuer Track ---------------------------------------------------------------
+
+  const dialog = $<HTMLDialogElement>("#new-dialog");
+  const form = $<HTMLFormElement>("#new-form");
+  const selectedTags = new Set<string>();
+  let tags: TagWithCount[] = [];
+
+  function renderTagPicker() {
+    const box = $("#new-tags");
+    if (!tags.length) {
+      box.replaceChildren(h("span", { class: "faint" }, "Noch keine Tags – anlegen unter Einstellungen."));
+      return;
+    }
+    box.replaceChildren(
+      ...tags.map((tag) =>
+        h(
+          "button",
+          {
+            type: "button",
+            class: "chip",
+            "aria-pressed": selectedTags.has(tag.id) ? "true" : "false",
+            onclick: (e: Event) => {
+              const btn = e.currentTarget as HTMLButtonElement;
+              if (selectedTags.has(tag.id)) selectedTags.delete(tag.id);
+              else selectedTags.add(tag.id);
+              btn.setAttribute("aria-pressed", String(selectedTags.has(tag.id)));
+            },
+          },
+          tag.name,
+          tag.category !== "Allgemein" ? h("span", { class: "cat" }, tag.category) : null,
+        ),
+      ),
+    );
+  }
+
+  function openNew() {
+    form.reset();
+    selectedTags.clear();
+    renderTagPicker();
+    $("#new-error").textContent = "";
+    dialog.showModal();
+  }
+
+  $("#open-new").addEventListener("click", openNew);
+  $("#new-cancel").addEventListener("click", () => dialog.close());
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const error = $("#new-error");
+    if (!form.reportValidity()) return;
+    try {
+      const input = readTrackForm(form);
+      const track = await api.createTrack({
+        ...input,
+        tag_ids: [...selectedTags],
+        sources: readLinks(form).map((url) => ({ url })),
+      });
+      dialog.close();
+      toast(`„${track.title}“ gespeichert.`);
+      load();
+    } catch (e) {
+      error.textContent = errorMessage(e);
+    }
+  });
+
+  // --- Start ----------------------------------------------------------------------
+
+  async function init() {
+    const openOnStart = new URLSearchParams(location.search).has("new");
+    if (!requireLogin(tokens, $("#content"))) {
+      $<HTMLButtonElement>("#open-new").disabled = true;
+      return;
+    }
+    try {
+      tags = await api.listTags();
+      const select = field<HTMLSelectElement>("tag");
+      for (const tag of tags) {
+        select.append(h("option", { value: tag.id }, tag.category === "Allgemein" ? tag.name : `${tag.name} (${tag.category})`));
+      }
+    } catch {
+      /* Tags sind optional – Liste lädt trotzdem */
+    }
+    await load();
+    if (openOnStart) openNew();
+  }
+  init();
+</script>
+
+<style is:global>
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 14px;
+  }
+  .toolbar .field {
+    flex: 0 1 200px;
+  }
+  .toolbar .grow {
+    flex: 1 1 280px;
+  }
+  .toolbar .sort-select {
+    display: none;
+  }
+  .tag-picker {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 16px;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  #new-form .form-error {
+    margin-top: 14px;
+  }
+  @media (max-width: 720px) {
+    .toolbar .sort-select {
+      display: flex;
+    }
+    .toolbar .field {
+      flex: 1 1 45%;
+    }
+  }
+</style>

@@ -44,6 +44,13 @@ class ConflictError(AppError):
     code = "conflict"
 
 
+class UnprocessableError(AppError):
+    """Syntaktisch gültige Anfrage, die fachlich nicht verarbeitet werden kann."""
+
+    status_code = 422
+    code = "unprocessable"
+
+
 class UnauthorizedError(AppError):
     status_code = 401
     code = "unauthorized"

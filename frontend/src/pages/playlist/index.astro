@@ -1,0 +1,455 @@
+---
+import Base from "../../layouts/Base.astro";
+---
+
+<Base title="Playlist" section="playlists">
+  <div id="content">
+    <div class="page-head">
+      <div>
+        <a class="crumb" href="/playlists/">Playlists</a>
+        <h1 id="pl-name">Lade …</h1>
+        <p class="lede" id="pl-desc"></p>
+        <p class="pl-meta muted" id="pl-meta"></p>
+      </div>
+      <div class="actions">
+        <button type="button" class="ghost" id="edit">Bearbeiten</button>
+        <button type="button" class="danger" id="delete">Löschen</button>
+      </div>
+    </div>
+
+    <div class="playlist-grid">
+      <section aria-labelledby="items-title">
+        <h2 id="items-title" class="visually-hidden">Titel der Playlist</h2>
+        <ol class="items" id="items"></ol>
+      </section>
+
+      <section aria-labelledby="add-title" class="add-panel">
+        <h2 id="add-title">Tracks hinzufügen</h2>
+        <label class="visually-hidden" for="search">Bibliothek durchsuchen</label>
+        <input id="search" type="search" placeholder="Bibliothek durchsuchen" autocomplete="off" />
+        <ul class="results" id="results"></ul>
+      </section>
+    </div>
+  </div>
+
+  <dialog id="edit-dialog" aria-labelledby="edit-title">
+    <form id="edit-form" method="dialog" novalidate>
+      <h2 id="edit-title">Playlist bearbeiten</h2>
+      <div class="form-grid">
+        <label class="field span-6">Name<input name="name" required maxlength="300" /></label>
+        <label class="field span-6">Beschreibung<textarea name="description" rows="3"></textarea></label>
+      </div>
+      <p class="form-error" id="edit-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" class="ghost" id="edit-cancel">Abbrechen</button>
+        <button type="submit">Speichern</button>
+      </div>
+    </form>
+  </dialog>
+</Base>
+
+<script>
+  import { ApiError, formatDuration, formatTotalDuration } from "../../lib/api";
+  import { createSession, requireLogin } from "../../lib/session";
+  import type { PlaylistDetail, PlaylistItem, Track } from "../../lib/types";
+  import { $, confirmDialog, coverageStrip, errorMessage, h, param, plural, toast } from "../../lib/ui";
+
+  const { api, tokens } = createSession();
+  const id = param("id") ?? "";
+  let playlist: PlaylistDetail;
+
+  // --- Kopf ---------------------------------------------------------------------
+
+  function renderHead() {
+    document.title = `${playlist.name} – MusicHub`;
+    $("#pl-name").textContent = playlist.name;
+    $("#pl-desc").textContent = playlist.description ?? "";
+    $("#pl-meta").textContent = playlist.item_count
+      ? `${plural(playlist.item_count, "Track", "Tracks")}, ${formatTotalDuration(playlist.total_duration_ms)}`
+      : "Noch leer";
+  }
+
+  // --- Einträge mit Verschieben -------------------------------------------------
+
+  async function apply(action: Promise<PlaylistDetail>, success?: string) {
+    try {
+      playlist = await action;
+      render();
+      if (success) toast(success);
+    } catch (e) {
+      toast(errorMessage(e), "error");
+      playlist = await api.getPlaylist(id);
+      render();
+    }
+  }
+
+  const move = (item: PlaylistItem, position: number) =>
+    apply(api.moveInPlaylist(playlist.id, item.id, position));
+
+  let dragged: PlaylistItem | null = null;
+
+  function itemRow(item: PlaylistItem, index: number, count: number) {
+    const t = item.track;
+    const li = h(
+      "li",
+      { class: "item", "data-id": item.id },
+      h("span", { class: "handle", title: "Ziehen zum Verschieben", "aria-hidden": "true", draggable: "true" }, "⋮⋮"),
+      h("span", { class: "pos num" }, String(index + 1)),
+      h(
+        "span",
+        { class: "item-main" },
+        h("a", { href: `/track/?id=${t.id}`, class: "item-title" }, t.title),
+        h("span", { class: "item-sub" }, t.version ? `${t.artist} – ${t.version}` : t.artist),
+      ),
+      h("span", { class: "item-cov" }, coverageStrip(t)),
+      h("span", { class: "num muted item-dur" }, formatDuration(t.duration_ms)),
+      h(
+        "span",
+        { class: "item-controls" },
+        h(
+          "button",
+          {
+            type: "button",
+            class: "quiet icon",
+            "aria-label": `„${t.title}“ nach oben`,
+            disabled: index === 0,
+            onclick: () => move(item, index - 1),
+          },
+          "↑",
+        ),
+        h(
+          "button",
+          {
+            type: "button",
+            class: "quiet icon",
+            "aria-label": `„${t.title}“ nach unten`,
+            disabled: index === count - 1,
+            onclick: () => move(item, index + 1),
+          },
+          "↓",
+        ),
+        h(
+          "button",
+          {
+            type: "button",
+            class: "quiet icon",
+            "aria-label": `„${t.title}“ aus der Playlist entfernen`,
+            title: "Entfernen",
+            onclick: () => apply(api.removeFromPlaylist(playlist.id, item.id), `„${t.title}“ entfernt.`),
+          },
+          "×",
+        ),
+      ),
+    );
+
+    // Ziehen mit der Maus (Desktop); auf Touch-Geräten die Pfeile verwenden
+    const handle = li.querySelector(".handle") as HTMLElement;
+    handle.addEventListener("dragstart", (e) => {
+      dragged = item;
+      li.classList.add("dragging");
+      e.dataTransfer?.setData("text/plain", item.id);
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer?.setDragImage(li, 20, 20);
+    });
+    handle.addEventListener("dragend", () => {
+      li.classList.remove("dragging");
+      document.querySelectorAll(".drop-before, .drop-after").forEach((el) => el.classList.remove("drop-before", "drop-after"));
+    });
+    li.addEventListener("dragover", (e) => {
+      if (!dragged || dragged.id === item.id) return;
+      e.preventDefault();
+      const rect = li.getBoundingClientRect();
+      const after = e.clientY > rect.top + rect.height / 2;
+      li.classList.toggle("drop-after", after);
+      li.classList.toggle("drop-before", !after);
+    });
+    li.addEventListener("dragleave", () => li.classList.remove("drop-before", "drop-after"));
+    li.addEventListener("drop", (e) => {
+      e.preventDefault();
+      if (!dragged || dragged.id === item.id) return;
+      const after = li.classList.contains("drop-after");
+      li.classList.remove("drop-before", "drop-after");
+      const from = dragged.position;
+      let target = after ? index + 1 : index;
+      if (from < target) target -= 1; // Eintrag wird vorher entfernt
+      const source = dragged;
+      dragged = null;
+      if (target !== from) move(source, target);
+    });
+    return li;
+  }
+
+  function render() {
+    renderHead();
+    const list = $("#items");
+    if (!playlist.items.length) {
+      list.replaceChildren(h("li", { class: "empty panel" }, "Füge rechts Tracks aus deiner Bibliothek hinzu."));
+    } else {
+      list.replaceChildren(...playlist.items.map((item, i) => itemRow(item, i, playlist.items.length)));
+    }
+    renderResults();
+  }
+
+  // --- Tracks hinzufügen ----------------------------------------------------------
+
+  let results: Track[] = [];
+
+  function renderResults() {
+    const list = $("#results");
+    const present = new Set(playlist.items.map((i) => i.track.id));
+    if (!results.length) {
+      list.replaceChildren(h("li", { class: "faint" }, searchInput.value ? "Keine Treffer." : "Tippe, um zu suchen."));
+      return;
+    }
+    list.replaceChildren(
+      ...results.map((t) =>
+        h(
+          "li",
+          { class: "result" },
+          h(
+            "span",
+            { class: "item-main" },
+            h("span", { class: "item-title" }, t.title),
+            h("span", { class: "item-sub" }, t.version ? `${t.artist} – ${t.version}` : t.artist),
+          ),
+          present.has(t.id)
+            ? h("span", { class: "faint small in-list" }, "enthalten")
+            : h(
+                "button",
+                {
+                  type: "button",
+                  class: "ghost",
+                  "aria-label": `„${t.title}“ hinzufügen`,
+                  onclick: () => apply(api.addToPlaylist(playlist.id, [t.id]), `„${t.title}“ hinzugefügt.`),
+                },
+                "Hinzufügen",
+              ),
+        ),
+      ),
+    );
+  }
+
+  const searchInput = $<HTMLInputElement>("#search");
+  let timer: number | undefined;
+  async function search() {
+    try {
+      const q = searchInput.value.trim();
+      const page = await api.listTracks(q ? { q, limit: 20 } : { sort: "created_at", order: "desc", limit: 20 });
+      results = page.items;
+      renderResults();
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    }
+  }
+  searchInput.addEventListener("input", () => {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(search, 250);
+  });
+
+  // --- Bearbeiten / Löschen ------------------------------------------------------
+
+  const dialog = $<HTMLDialogElement>("#edit-dialog");
+  const editForm = $<HTMLFormElement>("#edit-form");
+  $("#edit").addEventListener("click", () => {
+    (editForm.elements.namedItem("name") as HTMLInputElement).value = playlist.name;
+    (editForm.elements.namedItem("description") as HTMLTextAreaElement).value = playlist.description ?? "";
+    $("#edit-error").textContent = "";
+    dialog.showModal();
+  });
+  $("#edit-cancel").addEventListener("click", () => dialog.close());
+  editForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!editForm.reportValidity()) return;
+    const data = new FormData(editForm);
+    try {
+      playlist = await api.updatePlaylist(playlist.id, {
+        name: String(data.get("name")).trim(),
+        description: String(data.get("description") ?? "").trim() || null,
+      });
+      dialog.close();
+      render();
+      toast("Playlist gespeichert.");
+    } catch (err) {
+      $("#edit-error").textContent = errorMessage(err);
+    }
+  });
+
+  $("#delete").addEventListener("click", async () => {
+    const ok = await confirmDialog({
+      title: "Playlist löschen?",
+      message: `„${playlist.name}“ wird gelöscht. Die Tracks bleiben in der Bibliothek.`,
+      confirm: "Playlist löschen",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.deletePlaylist(playlist.id);
+      location.href = "/playlists/";
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    }
+  });
+
+  // --- Start ----------------------------------------------------------------------
+
+  async function init() {
+    const content = $("#content");
+    if (!requireLogin(tokens, content)) return;
+    try {
+      playlist = await api.getPlaylist(id);
+      render();
+      search();
+    } catch (e) {
+      content.replaceChildren(
+        h(
+          "div",
+          { class: "notice" },
+          h("p", {}, e instanceof ApiError && e.status === 404 ? "Diese Playlist gibt es nicht (mehr)." : errorMessage(e)),
+          h("a", { class: "button ghost", href: "/playlists/" }, "Zu den Playlists"),
+        ),
+      );
+    }
+  }
+  init();
+</script>
+
+<style is:global>
+  .pl-meta {
+    margin: 4px 0 0;
+    font-size: 0.9rem;
+  }
+  .playlist-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.7fr) minmax(260px, 1fr);
+    gap: 32px;
+    align-items: start;
+  }
+  ol.items {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: var(--r);
+    background: var(--surface);
+  }
+  .item {
+    display: grid;
+    grid-template-columns: 18px 28px minmax(0, 1fr) auto 52px auto;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px 8px 8px;
+    border-bottom: 1px solid var(--line);
+  }
+  .item:last-child {
+    border-bottom: 0;
+  }
+  .item.dragging {
+    opacity: 0.45;
+  }
+  .item.drop-before {
+    box-shadow: inset 0 2px 0 var(--accent);
+  }
+  .item.drop-after {
+    box-shadow: inset 0 -2px 0 var(--accent);
+  }
+  .handle {
+    cursor: grab;
+    color: var(--faint);
+    letter-spacing: -3px;
+    user-select: none;
+    text-align: center;
+  }
+  .pos {
+    color: var(--faint);
+    text-align: right;
+    font-size: 0.85rem;
+  }
+  .item-main {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .item-title {
+    font-weight: 600;
+    text-decoration: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  a.item-title:hover {
+    color: var(--accent-text);
+  }
+  .item-sub {
+    color: var(--muted);
+    font-size: 0.85rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .item-dur {
+    text-align: right;
+    font-size: 0.88rem;
+  }
+  .item-controls {
+    display: flex;
+    gap: 0;
+  }
+  .add-panel {
+    position: sticky;
+    top: 24px;
+  }
+  .add-panel input {
+    margin-bottom: 10px;
+  }
+  ul.results {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 60vh;
+    overflow-y: auto;
+  }
+  .result {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 2px;
+    border-bottom: 1px solid var(--line);
+  }
+  .in-list {
+    padding: 0 8px;
+  }
+  @media (max-width: 960px) {
+    .playlist-grid {
+      grid-template-columns: 1fr;
+    }
+    .add-panel {
+      position: static;
+    }
+  }
+  @media (max-width: 600px) {
+    .item {
+      grid-template-columns: 22px minmax(0, 1fr) auto;
+      grid-template-areas:
+        "pos main controls"
+        "pos cov controls";
+      row-gap: 4px;
+    }
+    .handle,
+    .item-dur {
+      display: none;
+    }
+    .pos {
+      grid-area: pos;
+    }
+    .item-main {
+      grid-area: main;
+    }
+    .item-cov {
+      grid-area: cov;
+    }
+    .item-controls {
+      grid-area: controls;
+    }
+  }
+</style>
