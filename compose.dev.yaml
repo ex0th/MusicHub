@@ -1,0 +1,90 @@
+# MusicHub – lokale Entwicklung mit Hot Reload.
+#
+#   cp .env.example .env
+#   docker compose -f compose.dev.yaml up --build
+#
+# Frontend: http://localhost:4321   API/Swagger: http://localhost:8000/api/docs
+# PostgreSQL ist auf localhost:5432 erreichbar (z. B. für DBeaver/psql).
+
+name: musichub-dev
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-musichub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-musichub}
+      POSTGRES_DB: ${POSTGRES_DB:-musichub}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-dev-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  backend:
+    build:
+      context: ./backend
+      target: dev
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MUSICHUB_APP_ENV: development
+      MUSICHUB_LOG_FORMAT: text
+      # Entwicklungs-Login; Token im Frontend auf der Übersicht eingeben
+      MUSICHUB_AUTH_MODE: ${MUSICHUB_DEV_AUTH_MODE:-dev}
+      MUSICHUB_DEV_AUTH_TOKEN: ${MUSICHUB_DEV_AUTH_TOKEN:-local-dev-token-change-me}
+      MUSICHUB_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-musichub}:${POSTGRES_PASSWORD:-musichub}@db:5432/${POSTGRES_DB:-musichub}
+    # Migrieren, dann mit Auto-Reload starten
+    command: ["sh", "-c", "musichub-migrate && exec uvicorn musichub.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/src"]
+    volumes:
+      - ./backend/src:/app/src
+      - ./backend/tests:/app/tests
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./backend
+      target: dev
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MUSICHUB_APP_ENV: development
+      MUSICHUB_LOG_FORMAT: text
+      # Entwicklungs-Login; Token im Frontend auf der Übersicht eingeben
+      MUSICHUB_AUTH_MODE: ${MUSICHUB_DEV_AUTH_MODE:-dev}
+      MUSICHUB_DEV_AUTH_TOKEN: ${MUSICHUB_DEV_AUTH_TOKEN:-local-dev-token-change-me}
+      MUSICHUB_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-musichub}:${POSTGRES_PASSWORD:-musichub}@db:5432/${POSTGRES_DB:-musichub}
+    command: ["musichub-worker"]
+    volumes:
+      - ./backend/src:/app/src
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      target: dev
+    environment:
+      MUSICHUB_API_URL: http://backend:8000
+    volumes:
+      - ./frontend:/app
+      - frontend-node-modules:/app/node_modules
+    ports:
+      - "127.0.0.1:4321:4321"
+    depends_on:
+      - backend
+
+volumes:
+  postgres-dev-data:
+  frontend-node-modules:

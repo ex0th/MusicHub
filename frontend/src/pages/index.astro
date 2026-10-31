@@ -1,0 +1,208 @@
+---
+import Base from "../layouts/Base.astro";
+
+const platforms = [
+  { id: "spotify", name: "Spotify" },
+  { id: "soundcloud", name: "SoundCloud" },
+  { id: "youtube", name: "YouTube" },
+];
+---
+
+<Base title="Übersicht" active="overview">
+  <h1>Übersicht</h1>
+  <p class="lede">
+    Zustand der Instanz und der Plattform-Connectoren. Fällt eine Plattform aus, bleiben die
+    Sammlung und alle anderen Plattformen nutzbar.
+  </p>
+
+  <h2>System</h2>
+  <div class="grid">
+    <div class="panel stat">
+      <span class="label">API</span>
+      <span class="value"><span class="dot" id="api-dot"></span><span id="api-value">prüfe …</span></span>
+      <span class="sub mono" id="api-sub"></span>
+    </div>
+    <div class="panel stat">
+      <span class="label">Datenbank</span>
+      <span class="value"><span class="dot" id="db-dot"></span><span id="db-value">prüfe …</span></span>
+      <span class="sub" id="db-sub"></span>
+    </div>
+    <div class="panel stat">
+      <span class="label">Migrationen</span>
+      <span class="value"><span class="dot" id="mig-dot"></span><span id="mig-value">prüfe …</span></span>
+      <span class="sub" id="mig-sub"></span>
+    </div>
+  </div>
+
+  <h2>Anmeldung</h2>
+  <form class="panel login" id="login-form" autocomplete="off">
+    <p>
+      Entwicklungsmodus: Token aus <code class="mono">MUSICHUB_DEV_AUTH_TOKEN</code> eingeben. Es
+      wird nur in diesem Browser-Tab gehalten. Mit Authentik ersetzt ein Login-Button dieses Feld.
+    </p>
+    <div class="row">
+      <label class="visually-hidden" for="token">Entwicklungs-Token</label>
+      <input id="token" name="token" type="password" placeholder="Entwicklungs-Token" />
+      <button type="submit">Anmelden</button>
+      <button type="button" class="ghost" id="logout">Abmelden</button>
+    </div>
+    <p class="feedback" id="login-feedback" role="status"></p>
+  </form>
+
+  <h2>Plattformen</h2>
+  <div class="grid" id="connectors">
+    {
+      platforms.map((p) => (
+        <div class="panel connector" data-platform={p.id}>
+          <span class="name">{p.name}</span>
+          <span class="state">
+            <span class="dot" />
+            <span class="state-text">Anmeldung nötig</span>
+          </span>
+          <span class="sub" />
+        </div>
+      ))
+    }
+  </div>
+</Base>
+
+<script>
+  import { ApiError } from "../lib/api";
+  import { createSession } from "../lib/session";
+  import type { ConnectorState } from "../lib/types";
+
+  const { api, tokens } = createSession();
+  const $ = (id: string) => document.getElementById(id) as HTMLElement;
+
+  function setCheck(prefix: string, ok: boolean, value: string, sub = "") {
+    $(`${prefix}-dot`).dataset["state"] = ok ? "ok" : "error";
+    $(`${prefix}-value`).textContent = value;
+    $(`${prefix}-sub`).textContent = sub;
+  }
+
+  async function loadHealth() {
+    try {
+      const live = await api.live();
+      setCheck("api", true, "erreichbar", `v${live.version} · ${live.build.slice(0, 7)}`);
+    } catch {
+      setCheck("api", false, "nicht erreichbar");
+      setCheck("db", false, "unbekannt");
+      setCheck("mig", false, "unbekannt");
+      return;
+    }
+    const ready = await api.ready();
+    const db = ready.checks["database"];
+    const mig = ready.checks["migrations"];
+    setCheck("db", db?.status === "ok", db?.status === "ok" ? "verbunden" : "Fehler", db?.detail ?? "");
+    if (mig) setCheck("mig", mig.status === "ok", mig.status === "ok" ? "aktuell" : "veraltet", mig.detail ?? "");
+    else setCheck("mig", false, "unbekannt");
+  }
+
+  const stateLabel: Record<ConnectorState, string> = {
+    ready: "bereit",
+    not_configured: "nicht konfiguriert",
+    degraded: "gestört",
+    suspended: "ausgesetzt",
+  };
+
+  async function loadConnectors() {
+    if (!tokens.getToken()) return;
+    try {
+      for (const c of await api.connectors()) {
+        const card = document.querySelector<HTMLElement>(`[data-platform="${c.platform}"]`);
+        if (!card) continue;
+        (card.querySelector(".dot") as HTMLElement).dataset["state"] = c.state;
+        (card.querySelector(".state-text") as HTMLElement).textContent = stateLabel[c.state];
+        (card.querySelector(".sub") as HTMLElement).textContent =
+          c.last_error ?? (c.capabilities.length ? c.capabilities.join(" · ") : "");
+      }
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        $("login-feedback").textContent = "Token ungültig – bitte neu anmelden.";
+      }
+    }
+  }
+
+  $("login-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const input = $("token") as HTMLInputElement;
+    const feedback = $("login-feedback");
+    tokens.setToken(input.value.trim() || null);
+    try {
+      const me = await api.me();
+      feedback.textContent = `Angemeldet als ${me.display_name} (${me.can_write ? "Lesen und Schreiben" : "nur Lesen"}).`;
+      feedback.classList.remove("error-text");
+      input.value = "";
+      window.location.reload();
+    } catch (error) {
+      tokens.setToken(null);
+      feedback.textContent = error instanceof ApiError ? error.message : "API nicht erreichbar.";
+      feedback.classList.add("error-text");
+    }
+  });
+
+  $("logout").addEventListener("click", () => {
+    tokens.setToken(null);
+    window.location.reload();
+  });
+
+  loadHealth();
+  loadConnectors();
+</script>
+
+<style>
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+  }
+  .stat,
+  .connector {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-height: 104px;
+  }
+  .label,
+  .name {
+    font-size: 0.82rem;
+    color: var(--muted);
+  }
+  .name {
+    color: var(--ink);
+    font-weight: 600;
+    font-size: 1rem;
+  }
+  .value {
+    font-size: 1.15rem;
+    font-weight: 600;
+  }
+  .sub {
+    font-size: 0.8rem;
+    color: var(--muted);
+    overflow-wrap: anywhere;
+  }
+  .login p {
+    margin: 0 0 12px;
+    color: var(--muted);
+  }
+  .login .row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .login input {
+    flex: 1 1 220px;
+  }
+  .login .feedback {
+    margin: 10px 0 0;
+    min-height: 1.5em;
+  }
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+</style>

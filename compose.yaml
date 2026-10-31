@@ -1,0 +1,85 @@
+# MusicHub – Betrieb, z. B. als Projekt in Arcane.
+#
+# Nutzt die fertigen Images aus der GitHub Container Registry (gebaut von
+# .github/workflows/ci.yml). Arcane erkennt neue Images und erstellt nur die geänderten
+# Services neu. Der Backend-Container migriert die Datenbank vor dem Start selbst
+# (mit Advisory-Lock), der Worker wartet, bis das Schema aktuell ist – die Reihenfolge,
+# in der Arcane die Container neu startet, spielt dadurch keine Rolle.
+#
+# Bewusst ohne YAML-Anker und ohne include/extends: So kann Arcane die Datei auch bei
+# Tag-basierten Updates selbst anpassen.
+#
+# Start:  cp .env.example .env   (Werte setzen!)   &&   docker compose up -d
+
+name: musichub
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-musichub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD in .env setzen}
+      POSTGRES_DB: ${POSTGRES_DB:-musichub}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    labels:
+      # Major-Upgrades von PostgreSQL brauchen Dump/Restore: nie automatisch installieren.
+      com.getarcaneapp.arcane.updater: "false"
+
+  backend:
+    image: ghcr.io/ex0th/musichub-backend:${MUSICHUB_VERSION:-latest}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MUSICHUB_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-musichub}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-musichub}
+    depends_on:
+      db:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+
+  worker:
+    image: ghcr.io/ex0th/musichub-backend:${MUSICHUB_VERSION:-latest}
+    command: ["musichub-worker"]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MUSICHUB_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-musichub}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-musichub}
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    stop_grace_period: 60s
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+
+  frontend:
+    image: ghcr.io/ex0th/musichub-frontend:${MUSICHUB_VERSION:-latest}
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      # Standard nur lokal; für den Reverse Proxy (Traefik, NPM, Caddy …) anpassen.
+      - "${MUSICHUB_HTTP_BIND:-127.0.0.1}:${MUSICHUB_HTTP_PORT:-8080}:8080"
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /etc/nginx/conf.d
+
+volumes:
+  postgres-data:

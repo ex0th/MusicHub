@@ -1,0 +1,183 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/ex0th/musichub
+
+jobs:
+  backend:
+    name: Backend (Lint, Migrationen, Tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: musichub
+          POSTGRES_PASSWORD: musichub
+          POSTGRES_DB: musichub_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U musichub" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg://musichub:musichub@localhost:5432/musichub_test
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest
+      - name: Modelle und Migrationen stimmen überein
+        env:
+          MUSICHUB_DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+        run: uv run alembic upgrade head && uv run alembic check
+
+  frontend:
+    name: Frontend (Tests, Typecheck, Build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    env:
+      ASTRO_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm build
+
+  images:
+    name: Images bauen, Stack testen, veröffentlichen
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # 1) Für den Smoke-Test nur amd64 bauen und lokal laden
+      - name: Images für Smoke-Test bauen
+        run: |
+          docker buildx build --load --build-arg BUILD_SHA=${{ github.sha }} \
+            --cache-from type=gha,scope=backend --cache-to type=gha,mode=max,scope=backend \
+            -t ${IMAGE_PREFIX}-backend:ci backend
+          docker buildx build --load --build-arg BUILD_SHA=${{ github.sha }} \
+            --cache-from type=gha,scope=frontend --cache-to type=gha,mode=max,scope=frontend \
+            -t ${IMAGE_PREFIX}-frontend:ci frontend
+
+      # 2) compose.yaml exakt so starten, wie Arcane es tut, und durch nginx testen
+      - name: Smoke-Test mit compose.yaml
+        run: |
+          set_env() { sed -i "s|^$1=.*|$1=$2|" .env; grep -q "^$1=" .env || echo "$1=$2" >> .env; }
+          cp .env.example .env
+          set_env MUSICHUB_VERSION ci
+          set_env POSTGRES_PASSWORD ci0smoke0test
+          set_env MUSICHUB_APP_ENV development
+          set_env MUSICHUB_AUTH_MODE dev
+          set_env MUSICHUB_DEV_AUTH_TOKEN ci-smoke-token-0123456789
+          docker compose up -d
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:8080/api/health/ready && break
+            sleep 2
+          done
+          echo
+          curl -fsS http://127.0.0.1:8080/api/health/ready | grep -q '"status":"ok"'
+          curl -fsS http://127.0.0.1:8080/ | grep -q "MusicHub"
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+            -d '{"title":"t","artist":"a"}' http://127.0.0.1:8080/api/v1/tracks)" = "401"
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+            -H 'Authorization: Bearer ci-smoke-token-0123456789' \
+            -d '{"title":"t","artist":"a"}' http://127.0.0.1:8080/api/v1/tracks)" = "201"
+          docker compose ps
+      - name: Logs bei Fehler
+        if: failure()
+        run: docker compose logs --no-color
+
+      # 3) Multi-Arch veröffentlichen (nur main und Versionstags)
+      - name: Bei GHCR anmelden
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tags bestimmen
+        id: meta
+        run: |
+          tags_for() {
+            local img="${IMAGE_PREFIX}-$1"
+            local t="${img}:sha-${GITHUB_SHA::7}"
+            if [[ "${GITHUB_REF}" == refs/heads/main ]]; then t="${t},${img}:latest"; fi
+            if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+              v="${GITHUB_REF_NAME#v}"
+              t="${t},${img}:${GITHUB_REF_NAME},${img}:${v%.*}"
+            fi
+            echo "$t"
+          }
+          echo "backend=$(tags_for backend)" >> "$GITHUB_OUTPUT"
+          echo "frontend=$(tags_for frontend)" >> "$GITHUB_OUTPUT"
+      - name: Backend veröffentlichen
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: BUILD_SHA=${{ github.sha }}
+          tags: ${{ steps.meta.outputs.backend }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+      - name: Frontend veröffentlichen
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: BUILD_SHA=${{ github.sha }}
+          tags: ${{ steps.meta.outputs.frontend }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+      # 4) Optional: Arcane sofort neu deployen lassen (Secret ARCANE_WEBHOOK_URL).
+      #    Ohne Secret übernimmt Arcanes Image Update Watcher das Update zeitversetzt.
+      - name: Arcane-Webhook auslösen
+        if: github.ref == 'refs/heads/main'
+        env:
+          ARCANE_WEBHOOK_URL: ${{ secrets.ARCANE_WEBHOOK_URL }}
+        run: |
+          if [ -z "$ARCANE_WEBHOOK_URL" ]; then
+            echo "Kein ARCANE_WEBHOOK_URL gesetzt – überspringe."
+            exit 0
+          fi
+          curl -fsS -X POST "$ARCANE_WEBHOOK_URL" -o /dev/null && echo "Arcane benachrichtigt."

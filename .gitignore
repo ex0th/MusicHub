@@ -1,0 +1,23 @@
+# Geheimnisse
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+
+# Node / Astro
+node_modules/
+dist/
+.astro/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
