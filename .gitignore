@@ -21,3 +21,7 @@ dist/
 .idea/
 .vscode/
 .DS_Store
+
+# Betrieb
+backups/
+compose.override.yaml

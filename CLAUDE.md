@@ -18,8 +18,9 @@ Instanz**, Playlists werden von dort nach Spotify, SoundCloud und YouTube synchr
 4. **Connectoren greifen nicht auf die Datenbank zu** und liefern nur DTOs aus
    `connectors/base.py`. Fehler immer als `ConnectorError` mit korrektem `retryable`.
 5. **Keine ungeschützten Schreiboperationen.** Lesende `/api/v1`-Routen:
-   `Depends(current_principal)`. Schreibende: `Depends(require_write)`.
-   `tests/test_api.py` prüft das für alle Routen – nicht abschwächen.
+   `Depends(current_principal)`. Schreibende: `Depends(require_write)` – darüber läuft
+   auch die CSRF-Prüfung für Cookie-Sitzungen. `tests/test_api.py` prüft das für alle
+   Routen – nicht abschwächen; Ausnahmen nur in `WRITE_EXEMPT` mit Begründung.
 6. **Keine Geheimnisse im Repo.** Neue Einstellungen in `core/config.py` (Präfix
    `MUSICHUB_`) und in `.env.example` mit leerem/Platzhalterwert dokumentieren.
 7. **Schemaänderung = Modell + Alembic-Migration im selben Commit.** CI führt
@@ -55,6 +56,11 @@ Instanz**, Playlists werden von dort nach Spotify, SoundCloud und YouTube synchr
     Vorschau. `mirror` nur für `managed` + `mirror_allowed`; externe Tracks nur mit
     Zustimmung zu einer gesehenen Vorschau entfernen. Planung bleibt rein (`sync/engine.py`),
     neue Regeln zuerst als Test in `test_sync_engine.py`.
+19. **Anmeldung nur über `auth/`** (`oidc.py`, `sessions.py`, `routes/auth.py`). Keine
+    Tokens von Authentik an den Browser, Sitzungs-Token nur als SHA-256 speichern,
+    Rückkehrpfade nur über `safe_return_to`, nur asymmetrische Signaturen. Neue
+    Sicherheitsregeln zuerst als Test (`test_auth_session.py`, `test_security.py`).
+    `production` muss unsichere Konfiguration beim Start ablehnen (`core/config.py`).
 
 ## Struktur
 
@@ -63,17 +69,20 @@ backend/
   src/musichub/
     main.py            App-Fabrik create_app(), Router-Registrierung
     serve.py           Container-Start: DB abwarten, migrieren, uvicorn
-    core/              config (Settings), logging, errors (RFC 9457), middleware (Request-ID)
-    auth/              Principal, Verifier (dev, oidc), Dependencies
+    core/              config (Settings + Produktions-Validierung), logging, errors (RFC 9457),
+                       middleware (Request-ID, Sicherheits-Header), ratelimit
+    auth/              oidc.py (Discovery, JWKS, Code-Tausch, Token-Prüfung), sessions.py
+                       (Sitzungen, Cookies, CSRF), verifiers.py (Bearer), dependencies.py
     domain/            types.py (Platform, LinkStatus, Availability, MatchMethod, JobStatus),
                        platform_urls.py (Links erkennen/erzeugen, ohne Netzwerk)
     db/                Engine/Session, Basis-Modell, Migrations-Status, migrate (Advisory-Lock)
     models/            SQLAlchemy-Modelle (library.py, imports.py, matching.py, connections.py,
-                       sync.py, job.py) – in models/__init__ exportieren
+                       sync.py, auth.py, job.py) – in models/__init__ exportieren
     migrations/        Alembic (env.py, versions/0001_…, 0002_bibliothek, 0003_importprotokoll,
-                       0004_matching, 0005_plattform_konten, 0006_synchronisation)
+                       0004_matching, 0005_plattform_konten, 0006_synchronisation,
+                       0007_anmeldung_sitzungen)
     api/               schemas.py (Pydantic), routes/ (health, system, tracks, playlists, tags,
-                       imports, exports, matching, connections [+ /api/oauth], sync)
+                       imports, exports, matching, connections [+ /api/oauth], sync, auth)
     library/           Fachlogik: tracks, sources, tags, playlists, stats, queries,
                        matching (Scan, Vorschläge), merge (Zusammenführen, Rückgängig)
     transfer/          Import/Export: decoding, records, formats/ (Adapter), matching,
@@ -86,24 +95,28 @@ backend/
     sync/              engine.py (plan_sync, reorder_moves – rein), service.py (Ziele,
                        Freigaben, Zeitplan, Historie), executor.py (Job sync.run)
     jobs/              queue.py, handlers.py (@handler), worker.py
-  tests/               pytest; DB-Tests mit @pytest.mark.db; fake_platforms.py (Plattform-APIs
-                       als httpx.MockTransport)
+  tests/               pytest; DB-Tests mit @pytest.mark.db; fake_platforms.py (Plattform-APIs)
+                       und fake_idp.py (Authentik) als httpx.MockTransport
 frontend/
   src/lib/             api.ts (Client), types.ts, auth.ts, session.ts, ui.ts (h(), Toast,
                        Dialog, Abdeckungsstreifen), platforms.ts, forms.ts, matching.ts,
                        connections.ts, sync.ts
   src/pages/           index (Dashboard), library/, track/?id=, playlists/, playlist/?id=,
-                       sync/?id=, matching/, platforms/, settings/, import/, import/run/?id=
+                       sync/?id=, matching/, platforms/, settings/, import/, import/run/?id=,
+                       login/ (Fehler/Abmeldung)
   src/layouts/         Base.astro (Navigation)
   src/components/      TrackForm.astro
   src/styles/          global.css (Tokens, Komponenten-Styles)
   public/theme.js      Farbschema vor dem ersten Rendern
   nginx/               nginx-Konfiguration (statisch + /api-Proxy)
-compose.yaml           Betrieb/Arcane (GHCR-Images)
+compose.yaml           Betrieb/Arcane (GHCR-Images, gehärtet, internes DB-Netz)
+compose.override.example.yaml  Frontend im Docker-Netz von Nginx Proxy Manager
+scripts/               backup.sh, restore.sh, create-app-role.sh (eigene DB-Rolle)
 compose.dev.yaml       Entwicklung (Build, Hot Reload)
 .github/workflows/ci.yml
 docs/                  ARCHITECTURE, DATABASE, API, ROADMAP, IMPORT_EXPORT, MATCHING,
-                       CONNECTORS, SYNC
+                       CONNECTORS, SYNC, DEPLOYMENT, BACKUP, SECURITY, TROUBLESHOOTING,
+                       PRUEFBERICHT
 examples/import/       Beispieldateien je Importformat (auch Testdaten)
 ```
 
@@ -165,7 +178,11 @@ docker compose -f compose.dev.yaml up --build
   `extends` halten, damit Arcane sie aktualisieren kann.
 - Backend migriert beim Start; daher Migrationen **abwärtskompatibel** gestalten (alter
   Worker kann kurz neben neuem Schema laufen): erst Spalten hinzufügen, später entfernen.
-- Container laufen als Nicht-Root mit Read-only-Root-FS; Schreibzugriffe nur nach `/tmp`.
+- Container laufen als Nicht-Root mit Read-only-Root-FS und `cap_drop: ALL`;
+  Schreibzugriffe nur nach `/tmp` (tmpfs). Datenbank nur im Netz `internal`, kein Host-Port.
+- Neue Ports, Capabilities oder Volumes in `compose.yaml` nur mit Begründung in
+  `docs/SECURITY.md`; der CI-Smoke-Test prüft Ports, Healthchecks, Backup/Restore und den
+  Start im Produktionsmodus.
 
 ## Arbeitsweise
 

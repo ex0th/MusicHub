@@ -35,9 +35,16 @@ def _dependencies(route: APIRoute) -> set[object]:
 # --- Sicherheitsnetz über alle Routen -----------------------------------------
 
 
+#: Ausnahmen mit Begründung. Abmelden muss auch ohne Schreibrecht gehen; die Route prüft
+#: selbst den CSRF-Token der Sitzung (test_auth_session.py).
+WRITE_EXEMPT = {"/api/auth/logout"}
+
+
 def test_every_write_route_requires_write_permission(app) -> None:  # type: ignore[no-untyped-def]
     routes = _api_routes(app.routes)
-    writes = [r for r in routes if r.methods - {"GET", "HEAD", "OPTIONS"}]
+    writes = [
+        r for r in routes if r.methods - {"GET", "HEAD", "OPTIONS"} and r.path not in WRITE_EXEMPT
+    ]
     assert writes, "Erwartet mindestens eine schreibende Route"
     unprotected = [f"{r.methods} {r.path}" for r in writes if require_write not in _dependencies(r)]
     assert not unprotected, f"Schreibende Routen ohne require_write: {unprotected}"

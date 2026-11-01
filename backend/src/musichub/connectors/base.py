@@ -250,15 +250,6 @@ class PlatformConnector(ABC):
         """Aktuelle Metadaten; ``None`` = auf der Plattform nicht (mehr) vorhanden."""
         raise self._unsupported("get_tracks")
 
-    def search_tracks(self, query: TrackQuery, limit: int = 10) -> Sequence[RemoteTrack]:
-        raise self._unsupported("search_tracks")
-
-    def get_track(self, external_id: str) -> RemoteTrack | None:
-        raise self._unsupported("get_track")
-
-    def get_playlist(self, external_id: str) -> RemotePlaylist:
-        raise self._unsupported("get_playlist")
-
     def search(self, access_token: str, query: TrackQuery, limit: int = 5) -> list[RemoteTrack]:
         """Kandidaten für einen lokalen Track (ohne Bewertung – die macht die Matching-Engine)."""
         raise self._unsupported("search")
@@ -293,10 +284,3 @@ class PlatformConnector(ABC):
         self, access_token: str, playlist_id: str, item_id: str, external_id: str, position: int
     ) -> None:
         raise self._unsupported("move_in_playlist")
-
-    # Alte Schnittstelle (Etappe 1) – nicht mehr verwendet
-    def create_playlist(self, name: str, description: str | None = None) -> RemotePlaylist:
-        raise self._unsupported("create_playlist")
-
-    def replace_playlist_tracks(self, external_id: str, track_ids: Sequence[str]) -> None:
-        raise self._unsupported("replace_playlist_tracks")

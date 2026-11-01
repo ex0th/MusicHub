@@ -106,6 +106,29 @@ def schedule_due_syncs(connectors: ConnectorRegistry) -> int:
     return count
 
 
+def purge_sessions() -> int:
+    """Abgelaufene Anmeldesitzungen und Login-Vorgänge löschen."""
+    from musichub.auth.sessions import purge_expired
+
+    try:
+        with get_sessionmaker().begin() as session:
+            return purge_expired(session, get_settings())
+    except Exception:
+        log.exception("Aufräumen abgelaufener Sitzungen fehlgeschlagen")
+        return 0
+
+
+def write_heartbeat(path: str | None) -> None:
+    """Lebenszeichen für den Docker-Healthcheck (Datei-Zeitstempel in /tmp)."""
+    if not path:
+        return
+    try:
+        with open(path, "w", encoding="ascii") as fh:
+            fh.write(str(int(time.time())))
+    except OSError:
+        log.warning("Heartbeat-Datei %s nicht schreibbar", path)
+
+
 def main() -> None:
     settings = get_settings()
     configure_logging(settings.log_level, settings.log_format)
@@ -129,10 +152,16 @@ def main() -> None:
 
     log.info("Worker %s gestartet (Job-Typen: %s)", worker_id, ", ".join(sorted(HANDLERS)))
     last_schedule = 0.0
+    last_purge = 0.0
+    heartbeat = os.environ.get("MUSICHUB_WORKER_HEARTBEAT_FILE", "/tmp/musichub-worker-heartbeat")
     while not stop.is_set():
+        write_heartbeat(heartbeat)
         if time.monotonic() - last_schedule >= settings.sync_scheduler_interval_seconds:
             last_schedule = time.monotonic()
             schedule_due_syncs(connectors)
+        if time.monotonic() - last_purge >= 3600:
+            last_purge = time.monotonic()
+            purge_sessions()
         try:
             worked = run_once(worker_id, connectors)
         except Exception:

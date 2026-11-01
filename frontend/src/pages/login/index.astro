@@ -1,0 +1,72 @@
+---
+import Base from "../../layouts/Base.astro";
+---
+
+<Base title="Anmelden" section="login">
+  <div class="login-page">
+    <div class="panel login-panel">
+      <h1>Anmelden</h1>
+      <p class="muted" id="login-text">Melde dich mit deinem Konto an, um MusicHub zu nutzen.</p>
+      <p class="form-error" id="login-problem" role="alert"></p>
+      <div class="login-actions" id="login-actions">
+        <a class="button" id="login-button" href="/api/auth/login">Anmelden</a>
+      </div>
+    </div>
+  </div>
+</Base>
+
+<style>
+  .login-page {
+    display: grid;
+    place-items: center;
+    min-height: 60vh;
+  }
+  .login-panel {
+    width: min(460px, 100%);
+    display: grid;
+    gap: 14px;
+  }
+  .login-panel h1 {
+    margin: 0;
+  }
+  .login-panel p {
+    margin: 0;
+  }
+  .login-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+</style>
+
+<script>
+  import { loginErrorText } from "../../lib/auth";
+  import { createSession } from "../../lib/session";
+  import { $, h } from "../../lib/ui";
+
+  const { api } = createSession();
+  const params = new URLSearchParams(location.search);
+  const problem = loginErrorText(params.get("error"));
+  if (problem) $("#login-problem").textContent = problem;
+  if (params.get("logged_out")) $("#login-text").textContent = "Du wurdest abgemeldet.";
+
+  api
+    .authSession()
+    .then((info) => {
+      const actions = $("#login-actions");
+      if (info.mode === "dev") {
+        $("#login-text").textContent =
+          "Diese Instanz nutzt die Entwicklungs-Anmeldung mit Token (MUSICHUB_AUTH_MODE=dev).";
+        actions.replaceChildren(h("a", { class: "button", href: "/settings/" }, "Token eingeben"));
+      } else if (info.authenticated && info.user) {
+        $("#login-text").textContent = `Du bist angemeldet als ${info.user.display_name}.`;
+        actions.replaceChildren(h("a", { class: "button", href: "/" }, "Zur Übersicht"));
+      } else if (!info.login_enabled) {
+        $("#login-problem").textContent = loginErrorText("not_configured") ?? "";
+        actions.replaceChildren();
+      }
+    })
+    .catch(() => {
+      /* Backend nicht erreichbar: Knopf bleibt, Fehler zeigt dann /api/auth/login */
+    });
+</script>

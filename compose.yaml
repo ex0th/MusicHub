@@ -1,15 +1,21 @@
-# MusicHub – Betrieb, z. B. als Projekt in Arcane.
+# MusicHub – Produktivbetrieb (z. B. als Projekt in Arcane), hinter einem Reverse Proxy
+# wie Nginx Proxy Manager mit HTTPS. Anleitung: docs/DEPLOYMENT.md
 #
 # Nutzt die fertigen Images aus der GitHub Container Registry (gebaut von
-# .github/workflows/ci.yml). Arcane erkennt neue Images und erstellt nur die geänderten
-# Services neu. Der Backend-Container migriert die Datenbank vor dem Start selbst
-# (mit Advisory-Lock), der Worker wartet, bis das Schema aktuell ist – die Reihenfolge,
-# in der Arcane die Container neu startet, spielt dadurch keine Rolle.
+# .github/workflows/ci.yml). Der Backend-Container migriert die Datenbank vor dem Start
+# selbst (mit Advisory-Lock), der Worker wartet, bis das Schema aktuell ist – die
+# Reihenfolge, in der Arcane die Container neu startet, spielt dadurch keine Rolle.
+#
+# Netze:
+#   internal – nur Datenbank, Backend, Worker; ohne Internetzugang, nicht erreichbar von außen
+#   web      – Frontend, Backend, Worker; Ausgang ins Internet (Authentik, Spotify, YouTube)
+# Veröffentlicht wird nur der Frontend-Port (Standard 127.0.0.1:8080). Datenbank und
+# Backend haben keine Ports auf dem Host.
 #
 # Bewusst ohne YAML-Anker und ohne include/extends: So kann Arcane die Datei auch bei
-# Tag-basierten Updates selbst anpassen.
+# Tag-basierten Updates selbst anpassen. Entwicklung: compose.dev.yaml
 #
-# Start:  cp .env.example .env   (Werte setzen!)   &&   docker compose up -d
+# Start:  cp .env.example .env && chmod 600 .env   (Werte setzen!)   &&   docker compose up -d
 
 name: musichub
 
@@ -19,15 +25,39 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-musichub}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD in .env setzen}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD in .env setzen (openssl rand -hex 24)}
       POSTGRES_DB: ${POSTGRES_DB:-musichub}
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    networks:
+      - internal
+    shm_size: 128mb
+    stop_grace_period: 60s
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 5s
+      interval: 10s
       timeout: 5s
-      retries: 20
+      retries: 12
+      start_period: 30s
+      start_interval: 2s
+    security_opt:
+      - no-new-privileges:true
+    # Der Einstiegspunkt von postgres wechselt beim Start auf den Benutzer postgres und
+    # passt Rechte des Datenverzeichnisses an – nur dafür nötige Capabilities
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     labels:
       # Major-Upgrades von PostgreSQL brauchen Dump/Restore: nie automatisch installieren.
       com.getarcaneapp.arcane.updater: "false"
@@ -37,15 +67,39 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      MUSICHUB_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-musichub}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-musichub}
+      # Eigene Rolle ohne Superuser-Rechte, falls eingerichtet (scripts/create-app-role.sh)
+      MUSICHUB_DATABASE_URL: postgresql+psycopg://${MUSICHUB_DB_USER:-${POSTGRES_USER:-musichub}}:${MUSICHUB_DB_PASSWORD:-${POSTGRES_PASSWORD}}@db:5432/${POSTGRES_DB:-musichub}
     depends_on:
       db:
         condition: service_healthy
+    networks:
+      - internal
+      - web
+    # Prozess lebt (/api/health/live). Migrationen laufen vor dem Start → lange start_period.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health/live', timeout=4).status == 200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+      start_interval: 3s
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
     read_only: true
     tmpfs:
-      - /tmp
+      - /tmp:size=64m,mode=1777
+    pids_limit: 256
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
   worker:
     image: ghcr.io/ex0th/musichub-backend:${MUSICHUB_VERSION:-latest}
@@ -53,32 +107,73 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      MUSICHUB_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-musichub}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-musichub}
+      # Eigene Rolle ohne Superuser-Rechte, falls eingerichtet (scripts/create-app-role.sh)
+      MUSICHUB_DATABASE_URL: postgresql+psycopg://${MUSICHUB_DB_USER:-${POSTGRES_USER:-musichub}}:${MUSICHUB_DB_PASSWORD:-${POSTGRES_PASSWORD}}@db:5432/${POSTGRES_DB:-musichub}
     depends_on:
       db:
         condition: service_healthy
+    networks:
+      - internal
+      - web
+    # Der Worker schreibt bei jedem Schleifendurchlauf eine Heartbeat-Datei. Lange Jobs
+    # (z. B. eine große YouTube-Synchronisierung) dürfen bis zu 15 Minuten dauern.
     healthcheck:
-      disable: true
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,sys,time; p='/tmp/musichub-worker-heartbeat'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p) < 900 else 1)"
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+      start_interval: 10s
     stop_grace_period: 60s
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
     read_only: true
     tmpfs:
-      - /tmp
+      - /tmp:size=64m,mode=1777
+    pids_limit: 256
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
   frontend:
     image: ghcr.io/ex0th/musichub-frontend:${MUSICHUB_VERSION:-latest}
     restart: unless-stopped
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    networks:
+      - web
     ports:
-      # Standard nur lokal; für den Reverse Proxy (Traefik, NPM, Caddy …) anpassen.
+      # Nur für den Reverse Proxy. 127.0.0.1 = Proxy läuft auf demselben Host mit
+      # Host-Netz; sonst die Adresse, unter der der Proxy den Host erreicht (Firewall!),
+      # oder gemeinsames Docker-Netz (compose.override.example.yaml).
       - "${MUSICHUB_HTTP_BIND:-127.0.0.1}:${MUSICHUB_HTTP_PORT:-8080}:8080"
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
     read_only: true
     tmpfs:
-      - /tmp
+      - /tmp:size=32m,mode=1777
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  internal:
+    internal: true
+  web: {}
 
 volumes:
   postgres-data:

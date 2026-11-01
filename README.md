@@ -8,10 +8,11 @@ die führende Instanz**: Ein Track existiert auch dann, wenn er auf keiner oder 
 Plattform verfügbar ist. Fällt eine Plattform aus, laufen Sammlung und alle anderen
 Plattformen ungestört weiter.
 
-> **Stand: Etappe 5a – Bibliothek, Import/Export, Matching, Plattform-Konten und Synchronisierung nach Spotify/YouTube.** Tracks, Plattform-Quellen, Tags und Playlists lassen
-> sich vollständig in der Weboberfläche und per REST-API verwalten – ganz ohne Plattform-Konten.
-> Links zu Spotify, SoundCloud und YouTube werden beim Einfügen erkannt. Die automatische
-> Anbindung der Plattform-APIs folgt in den nächsten Etappen, siehe [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Stand: Etappe 3 – bereit für den Produktivbetrieb.** Bibliothek, Import/Export,
+> Matching, Plattform-Konten und Synchronisierung nach Spotify/YouTube; Anmeldung über
+> Authentik (OIDC) mit serverseitiger Sitzung; gehärtete `compose.yaml`, Backup-Skripte.
+> Prüfergebnis und offene Punkte: [docs/PRUEFBERICHT.md](docs/PRUEFBERICHT.md),
+> Etappen: [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Funktionen
 
@@ -81,18 +82,21 @@ Tags: `latest` (main), `sha-<commit>`, bei Git-Tags `v1.2.3` zusätzlich `v1.2.3
 
 ### Einrichtung
 
-1. `compose.yaml` und `.env.example` auf den Server bringen (oder in Arcane ein neues
-   Projekt anlegen und `compose.yaml` einfügen).
-2. `.env` aus `.env.example` erstellen und mindestens setzen:
-   - `POSTGRES_PASSWORD` – z. B. `openssl rand -hex 24`
-   - Authentifizierung, siehe [Konfiguration](#konfiguration)
-   - `MUSICHUB_HTTP_BIND`/`MUSICHUB_HTTP_PORT` passend zum Reverse Proxy
-3. Starten: `docker compose up -d` (bzw. in Arcane deployen).
-4. Prüfen: `http://<host>:8080/api/health/ready` liefert `"status":"ok"`.
+Schritt für Schritt (Authentik, Nginx Proxy Manager, `.env`, Prüfung):
+**[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**. Kurzfassung:
+
+1. In Authentik eine OAuth2/OpenID-Anwendung `musichub` anlegen (Confidential, Signing Key,
+   Redirect-URI `https://<domain>/api/auth/callback`).
+2. `.env` aus `.env.example` erstellen (`chmod 600`), mindestens `MUSICHUB_PUBLIC_URL`,
+   `POSTGRES_PASSWORD`, `MUSICHUB_OIDC_ISSUER`, `MUSICHUB_OIDC_CLIENT_ID`,
+   `MUSICHUB_OIDC_CLIENT_SECRET` setzen.
+3. `docker compose up -d`, Proxy Host in Nginx Proxy Manager auf das Frontend (Port 8080).
+4. Prüfen: `https://<domain>/api/health/ready` liefert `"status":"ok"`, Anmelden im Browser.
 
 Das Backend wartet beim Start auf die Datenbank und migriert sie automatisch (geschützt
 durch einen PostgreSQL-Advisory-Lock). Der Worker beginnt erst, wenn das Schema aktuell
-ist. Deshalb ist die Reihenfolge egal, in der Container neu gestartet werden.
+ist. Deshalb ist die Reihenfolge egal, in der Container neu gestartet werden. Ein
+unsicher konfiguriertes `production`-Backend startet nicht.
 
 ### Automatische Updates mit Arcane
 
@@ -116,12 +120,12 @@ Für reproduzierbare Stände `MUSICHUB_VERSION=v0.1.0` in `.env` setzen statt `l
 
 ### Backup
 
-Inhaltlich: *Musikbibliothek → Import und Export → Als JSON exportieren* (wieder importierbar).
-Vollständig (inkl. Protokolle): alle Daten liegen im Volume `postgres-data`:
-
 ```bash
-docker compose exec db pg_dump -U musichub -Fc musichub > musichub-$(date +%F).dump
+scripts/backup.sh                       # Datenbank + .env/Compose-Dateien nach ./backups
+scripts/restore.sh backups/<datei>.dump # Wiederherstellen (mit Sicherheitskopie)
 ```
+
+Automatisierung, Auslagerung, Upgrade und Rollback: [docs/BACKUP.md](docs/BACKUP.md).
 
 ## Lokale Entwicklung
 
@@ -183,22 +187,16 @@ Alle Einstellungen kommen aus Umgebungsvariablen, dokumentiert in [`.env.example
 
 ### Authentifizierung
 
-Lesende API-Endpunkte unter `/api/v1` brauchen ein gültiges Token, schreibende zusätzlich
-Schreibrechte. Öffentlich sind nur `/api/health/*` und die OpenAPI-Beschreibung.
+Lesende API-Endpunkte unter `/api/v1` brauchen eine Anmeldung, schreibende zusätzlich
+Schreibrechte. Öffentlich sind nur `/api/health/*` und `/api/auth/*` (Anmeldung).
 
 | Modus | Wann | Verhalten |
 |---|---|---|
-| `dev` | lokale Entwicklung | Statisches Bearer-Token aus `MUSICHUB_DEV_AUTH_TOKEN` (≥ 16 Zeichen). Start wird bei `MUSICHUB_APP_ENV=production` verweigert. |
-| `oidc` | Betrieb | Validiert JWT-Access-Tokens (Signatur über JWKS, `iss`, `aud`, `exp`). Schreibrechte über Gruppe `MUSICHUB_OIDC_WRITE_GROUP`. |
+| `oidc` | Betrieb | Browser: Anmeldung über Authentik (Authorization Code Flow + PKCE), serverseitige Sitzung im HttpOnly-Cookie, CSRF-Schutz, Ablauf nach Inaktivität und absolut, Abmeldung. Skripte: JWT-Access-Tokens von Authentik als Bearer. Schreibrechte über Gruppe `MUSICHUB_OIDC_WRITE_GROUP`. |
+| `dev` | lokale Entwicklung | Statisches Bearer-Token aus `MUSICHUB_DEV_AUTH_TOKEN` (≥ 16 Zeichen), Eingabe unter *Einstellungen*. Start wird bei `MUSICHUB_APP_ENV=production` verweigert. |
 
-Für **Authentik**: einen OAuth2/OpenID-Provider und eine Anwendung `musichub` anlegen,
-`MUSICHUB_OIDC_ISSUER` auf die Issuer-URL (`https://auth.example.com/application/o/musichub/`)
-und `MUSICHUB_OIDC_AUDIENCE` auf die Client-ID setzen. Der Login-Flow im Frontend folgt
-in einer späteren Etappe, die API ist dafür bereits fertig.
-
-> Wer die Instanz vorher im Netz erreichbar machen will: Bis der OIDC-Login im Frontend
-> existiert, den Zugang über den Reverse Proxy absichern (z. B. Authentik-Forward-Auth)
-> oder `MUSICHUB_HTTP_BIND=127.0.0.1` lassen.
+Einrichtung in Authentik: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#2-authentik-einrichten),
+Sicherheitsmerkmale: [docs/SECURITY.md](docs/SECURITY.md).
 
 ### Plattform-Konten (optional)
 
@@ -220,6 +218,11 @@ mit Schreibzugriff verbinden – siehe [docs/SYNC.md](docs/SYNC.md).
 - [docs/API.md](docs/API.md) – Endpunkte, Auth, Fehlerformat
 - [docs/IMPORT_EXPORT.md](docs/IMPORT_EXPORT.md) – Importformate, Spalten, Ablauf, Export
 - [docs/CONNECTORS.md](docs/CONNECTORS.md) – Plattform-APIs, Einrichtung, Scopes, Kontingente
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) – Produktivbetrieb mit Authentik und Nginx Proxy Manager
+- [docs/BACKUP.md](docs/BACKUP.md) – Backup, Wiederherstellung, Upgrade, Rollback
+- [docs/SECURITY.md](docs/SECURITY.md) – Sicherheitsmaßnahmen und ihre Tests
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) – Fehlersuche
+- [docs/PRUEFBERICHT.md](docs/PRUEFBERICHT.md) – Prüfergebnis, offene Punkte, API-Grenzen
 - [docs/SYNC.md](docs/SYNC.md) – Synchronisierung: Freigaben, Modi, Konflikte, Historie
 - [docs/MATCHING.md](docs/MATCHING.md) – Erkennung gleicher Tracks, Score, Regeln, Zusammenführen
 - [docs/ROADMAP.md](docs/ROADMAP.md) – Etappen und offene Punkte

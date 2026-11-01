@@ -31,6 +31,21 @@ export interface Me {
   auth_method: string;
 }
 
+export interface AuthSession {
+  mode: "dev" | "oidc";
+  login_enabled: boolean;
+  authenticated: boolean;
+  user: {
+    subject: string;
+    display_name: string;
+    email: string | null;
+    groups: string[];
+    can_write: boolean;
+  } | null;
+  expires_at: string | null;
+  idle_expires_at: string | null;
+}
+
 export interface ConnectorStatus {
   platform: Platform;
   state: ConnectorState;

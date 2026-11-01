@@ -15,18 +15,37 @@ REST-API unter `/api`. Die vollständige, stets aktuelle Beschreibung erzeugt Fa
 
 ## Authentifizierung
 
-`Authorization: Bearer <token>`
+Zwei Wege (Details und Sicherheitsmerkmale: [SECURITY.md](SECURITY.md)):
+
+- **Browser** (`MUSICHUB_AUTH_MODE=oidc`): Anmeldung über `/api/auth/login` (Authentik,
+  Authorization Code Flow), danach Sitzungs-Cookie `__Host-musichub_session`. Verändernde
+  Anfragen brauchen zusätzlich den Header `X-CSRF-Token` mit dem Wert des Cookies
+  `__Host-musichub_csrf`.
+- **Skripte/API-Clients:** `Authorization: Bearer <token>` – im Modus `oidc` ein
+  JWT-Access-Token von Authentik (`aud` = Client-ID oder `MUSICHUB_OIDC_AUDIENCE`), im
+  Modus `dev` das Entwicklungs-Token. Kein CSRF-Token nötig.
 
 | Bereich | Anforderung |
 |---|---|
-| `/api/health/*`, `/api/openapi.json`, `/api/docs` | öffentlich |
+| `/api/health/*`, `/api/auth/session`, `/api/auth/login`, `/api/auth/callback` | öffentlich |
+| `/api/openapi.json`, `/api/docs` | öffentlich, in `production` nur mit `MUSICHUB_API_DOCS=true` |
 | `GET /api/v1/*` | angemeldet |
-| `POST`/`PATCH`/`PUT`/`DELETE /api/v1/*` | angemeldet **und** Schreibrecht |
+| `POST`/`PATCH`/`PUT`/`DELETE /api/v1/*` | angemeldet **und** Schreibrecht (+ CSRF bei Cookie) |
+| `POST /api/auth/logout` | Sitzung + CSRF (ohne Schreibrecht) |
 
-Token je nach `MUSICHUB_AUTH_MODE`: Entwicklungs-Token (`dev`) oder OIDC-Access-Token
-(`oidc`, z. B. von Authentik). Schreibrecht im OIDC-Modus über Gruppe
-`MUSICHUB_OIDC_WRITE_GROUP`. Fehlt oder ist das Token ungültig: `401` mit
-`WWW-Authenticate: Bearer`; fehlt das Schreibrecht: `403`.
+Schreibrecht im OIDC-Modus über Gruppe `MUSICHUB_OIDC_WRITE_GROUP`. Ohne Anmeldung `401`
+(`code: unauthorized`, abgelaufene Sitzung `session_expired` – die Cookies werden dann
+gelöscht); fehlendes Schreibrecht oder CSRF-Token `403`; zu viele Anmeldeversuche `429`
+mit `Retry-After`.
+
+### Anmeldung (`/api/auth`)
+
+| Methode | Pfad | Beschreibung |
+|---|---|---|
+| GET | `/api/auth/session` | `{mode: dev\|oidc, login_enabled, authenticated, user: {subject, display_name, email, groups, can_write}, expires_at, idle_expires_at}` |
+| GET | `/api/auth/login?next=/pfad` | `302` zu Authentik (PKCE, `state`, `nonce`). `next` nur relative Pfade. Im dev-Modus `302` nach `/settings/` |
+| GET | `/api/auth/callback?code&state` | Rückruf von Authentik → `303` nach `next` mit Sitzungs-Cookies, bei Fehlern `303` nach `/login/?error=<code>` (`not_configured`, `provider_unavailable`, `invalid_state`, `access_denied`, `provider_error`, `invalid_request`, `token_exchange_failed`, `invalid_id_token`, `forbidden`) |
+| POST | `/api/auth/logout` | Sitzung löschen → `{redirect}` (Abmeldung bei Authentik oder `/login/?logged_out=1`) |
 
 ## Fehlerformat (RFC 9457)
 

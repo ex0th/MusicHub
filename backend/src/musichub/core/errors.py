@@ -88,9 +88,19 @@ def problem(
 
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
-    async def _app_error(_: Request, exc: AppError) -> JSONResponse:
-        headers = {"WWW-Authenticate": "Bearer"} if exc.status_code == 401 else None
-        return problem(exc.status_code, exc.code, exc.detail, headers=headers, **exc.extra)
+    async def _app_error(request: Request, exc: AppError) -> JSONResponse:
+        headers: dict[str, str] = {}
+        if exc.status_code == 401:
+            headers["WWW-Authenticate"] = "Bearer"
+        if exc.status_code == 429 and "retry_after" in exc.extra:
+            headers["Retry-After"] = str(exc.extra["retry_after"])
+        response = problem(
+            exc.status_code, exc.code, exc.detail, headers=headers or None, **exc.extra
+        )
+        sessions = getattr(request.app.state, "sessions", None)
+        if exc.code == "session_expired" and sessions is not None:
+            sessions.clear_session_cookies(response)
+        return response
 
     @app.exception_handler(StarletteHTTPException)
     async def _http_error(_: Request, exc: StarletteHTTPException) -> JSONResponse:
@@ -107,5 +117,17 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
-        log.exception("Unbehandelter Fehler bei %s %s", request.method, request.url.path)
-        return problem(500, "internal_error", "Interner Fehler. Details stehen im Server-Log.")
+        # Läuft in der äußersten Middleware, nachdem der Request-Kontext schon
+        # zurückgesetzt ist – Request-ID für Log und Antwort wiederherstellen.
+        request_id = correlation_id.get() or request.scope.get("musichub.request_id")
+        token = correlation_id.set(request_id)
+        try:
+            log.exception("Unbehandelter Fehler bei %s %s", request.method, request.url.path)
+            response = problem(
+                500, "internal_error", "Interner Fehler. Details stehen im Server-Log."
+            )
+        finally:
+            correlation_id.reset(token)
+        if request_id:
+            response.headers["X-Request-ID"] = request_id
+        return response

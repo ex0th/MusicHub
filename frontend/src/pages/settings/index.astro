@@ -10,7 +10,11 @@ import Base from "../../layouts/Base.astro";
   <div class="settings">
     <section aria-labelledby="login-title">
       <h2 id="login-title">Anmeldung</h2>
-      <form class="panel" id="login-form" autocomplete="off">
+      <div class="panel account" id="account" hidden>
+        <p id="account-text">Nicht angemeldet.</p>
+        <div class="inline-form" id="account-actions"></div>
+      </div>
+      <form class="panel" id="login-form" autocomplete="off" hidden>
         <p class="muted" id="login-state">
           Gib das Entwicklungs-Token aus <code>MUSICHUB_DEV_AUTH_TOKEN</code> ein. Es bleibt nur in
           diesem Browser-Tab gespeichert.
@@ -59,13 +63,14 @@ import Base from "../../layouts/Base.astro";
     <section aria-labelledby="sys-title">
       <h2 id="sys-title">System</h2>
       <dl class="panel sysinfo" id="sysinfo"></dl>
-      <p><a href="/api/docs" target="_blank" rel="noopener">API-Dokumentation öffnen</a></p>
+      <p><a href="/api/docs" target="_blank" rel="noopener">API-Dokumentation öffnen</a> <span class="muted">(in production nur mit <code>MUSICHUB_API_DOCS=true</code>)</span></p>
     </section>
   </div>
 </Base>
 
 <script>
-  import { createSession } from "../../lib/session";
+  import { createSession, hasCredentials, logout } from "../../lib/session";
+  import { loginUrl } from "../../lib/auth";
   import type { TagWithCount } from "../../lib/types";
   import { $, confirmDialog, errorMessage, h, toast } from "../../lib/ui";
 
@@ -73,7 +78,50 @@ import Base from "../../layouts/Base.astro";
 
   // --- Anmeldung --------------------------------------------------------------------
 
+  function formatTime(value: string | null): string {
+    return value ? new Date(value).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" }) : "–";
+  }
+
   async function showLogin() {
+    let mode: "dev" | "oidc" = "dev";
+    try {
+      const info = await api.authSession();
+      mode = info.mode;
+      if (info.mode === "oidc") {
+        $("#account").hidden = false;
+        const text = $("#account-text");
+        const actions = $("#account-actions");
+        if (info.authenticated && info.user) {
+          const user = info.user;
+          text.textContent =
+            `Angemeldet über Authentik als ${user.display_name}` +
+            `${user.email ? ` (${user.email})` : ""} – ${user.can_write ? "lesen und schreiben" : "nur lesen"}. ` +
+            `Sitzung gültig bis ${formatTime(info.idle_expires_at)} bei Inaktivität, spätestens ${formatTime(info.expires_at)}.`;
+          actions.replaceChildren(
+            h(
+              "button",
+              {
+                type: "button",
+                class: "ghost",
+                onclick: () => logout(api, tokens).catch((err: unknown) => toast(errorMessage(err), "error")),
+              },
+              "Abmelden",
+            ),
+          );
+        } else {
+          text.textContent = info.login_enabled
+            ? "Nicht angemeldet."
+            : "Die Anmeldung über Authentik ist nicht vollständig eingerichtet (siehe docs/DEPLOYMENT.md).";
+          actions.replaceChildren(
+            ...(info.login_enabled ? [h("a", { class: "button", href: loginUrl(location) }, "Anmelden")] : []),
+          );
+        }
+        return;
+      }
+    } catch {
+      /* Backend nicht erreichbar – dev-Formular zeigen */
+    }
+    if (mode === "dev") $("#login-form").hidden = false;
     const state = $("#login-state");
     if (!tokens.getToken()) return;
     try {
@@ -238,7 +286,7 @@ import Base from "../../layouts/Base.astro";
 
   showLogin();
   loadSystem();
-  if (tokens.getToken()) loadTags();
+  if (hasCredentials(tokens)) loadTags();
   else $("#tags").hidden = true;
 </script>
 
