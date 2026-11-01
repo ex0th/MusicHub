@@ -132,9 +132,82 @@ jobs:
           # Plattformen ohne Zugangsdaten: nicht eingerichtet, keine Tokens in der Antwort
           curl -fsS -H "$AUTH" http://127.0.0.1:8080/api/v1/connections | grep -q '"configured":false'
           test "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8080/api/oauth/callback/spotify?state=x&code=y')" = "303"
-          for page in library/ playlists/ playlist/ sync/ track/ matching/ platforms/ settings/ import/ import/run/; do
+          for page in library/ playlists/ playlist/ sync/ track/ matching/ platforms/ settings/ import/ import/run/ login/; do
             curl -fsS -o /dev/null "http://127.0.0.1:8080/$page"
           done
+          # Datenbank und Backend haben keinen Port auf dem Host
+          for svc in db backend worker; do
+            test -z "$(docker port "$(docker compose ps -q $svc)")"
+          done
+          # Healthchecks: db und backend gesund, Worker-Heartbeat aktuell
+          for svc in db backend; do
+            test "$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q $svc)")" = "healthy"
+          done
+          docker compose exec -T worker python -c "import os,sys,time; p='/tmp/musichub-worker-heartbeat'; sys.exit(0 if time.time()-os.path.getmtime(p) < 900 else 1)"
+          docker compose ps
+
+      - name: Eigene Datenbankrolle (scripts/create-app-role.sh)
+        run: |
+          set_env() { sed -i "s|^$1=.*|$1=$2|" .env; grep -q "^$1=" .env || echo "$1=$2" >> .env; }
+          set_env MUSICHUB_DB_USER musichub_app
+          set_env MUSICHUB_DB_PASSWORD ci0app0password0123
+          scripts/create-app-role.sh
+          docker compose up -d
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:8080/api/health/ready >/dev/null 2>&1 && break
+            sleep 2
+          done
+          docker compose exec -T db psql -U musichub -d musichub -tAc \
+            "select rolsuper from pg_roles r join pg_stat_activity a on a.usename = r.rolname where a.datname = 'musichub' and r.rolname = 'musichub_app' limit 1" | grep -qx f
+          curl -fsS -H 'Authorization: Bearer ci-smoke-token-0123456789' http://127.0.0.1:8080/api/v1/stats | grep -q '"tracks"'
+
+      - name: Backup und Wiederherstellung (scripts/backup.sh, scripts/restore.sh)
+        run: |
+          AUTH='Authorization: Bearer ci-smoke-token-0123456789'
+          count() { curl -fsS -H "$AUTH" http://127.0.0.1:8080/api/v1/stats | python3 -c 'import json,sys; print(json.load(sys.stdin)["tracks"])'; }
+          BEFORE=$(count)
+          scripts/backup.sh
+          DUMP=$(ls backups/*.dump | tail -1)
+          test -s "$DUMP"
+          tar -tzf "${DUMP%.dump}-config.tar.gz" | grep -qx .env
+          curl -fsS -o /dev/null -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+            -d '{"title":"Nach dem Backup","artist":"CI"}' http://127.0.0.1:8080/api/v1/tracks
+          test "$(count)" = "$((BEFORE + 1))"
+          scripts/restore.sh --yes "$DUMP"
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:8080/api/health/ready >/dev/null 2>&1 && break
+            sleep 2
+          done
+          test "$(count)" = "$BEFORE"
+          ls -l backups/
+
+      - name: Produktivkonfiguration (OIDC, production)
+        run: |
+          set_env() { sed -i "s|^$1=.*|$1=$2|" .env; grep -q "^$1=" .env || echo "$1=$2" >> .env; }
+          set_env MUSICHUB_APP_ENV production
+          set_env MUSICHUB_AUTH_MODE oidc
+          set_env MUSICHUB_DEV_AUTH_TOKEN ""
+          set_env MUSICHUB_OIDC_ISSUER https://auth.invalid/application/o/musichub/
+          set_env MUSICHUB_OIDC_CLIENT_ID ci-client
+          set_env MUSICHUB_OIDC_CLIENT_SECRET ci-secret-0123456789
+          set_env MUSICHUB_PUBLIC_URL https://music.example.test
+          docker compose -f compose.yaml -f compose.override.example.yaml config --quiet
+          docker compose up -d
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:8080/api/health/ready >/dev/null 2>&1 && break
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8080/api/auth/session | tee /dev/stderr | grep -q '"mode":"oidc","login_enabled":true,"authenticated":false'
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/me)" = "401"
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer ci-smoke-token-0123456789' http://127.0.0.1:8080/api/v1/me)" = "401"
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+            -H 'Cookie: __Host-musichub_session=forged' -d '{"title":"t","artist":"a"}' \
+            http://127.0.0.1:8080/api/v1/tracks)" = "401"
+          # Identity-Provider nicht erreichbar → verständliche Fehlerseite statt 500
+          curl -s -o /dev/null -w '%{redirect_url}' http://127.0.0.1:8080/api/auth/login | grep -q '/login/?error=provider_unavailable'
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/docs)" = "404"
+          curl -fsSI http://127.0.0.1:8080/ | grep -qi '^content-security-policy:'
+          curl -fsSI http://127.0.0.1:8080/api/health/live | grep -qi '^x-content-type-options: nosniff'
           docker compose ps
       - name: Logs bei Fehler
         if: failure()

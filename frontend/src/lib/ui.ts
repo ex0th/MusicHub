@@ -53,8 +53,12 @@ export function errorMessage(error: unknown): string {
         })
         .join("; ");
     }
-    if (error.status === 401) return "Nicht angemeldet. Bitte unter Einstellungen ein Token eingeben.";
-    if (error.status === 403) return "Keine Schreibberechtigung.";
+    if (error.status === 401) {
+      return error.problem?.code === "session_expired"
+        ? "Sitzung abgelaufen. Bitte erneut anmelden."
+        : "Nicht angemeldet. Bitte anmelden.";
+    }
+    if (error.status === 403) return error.problem?.detail ?? "Keine Schreibberechtigung.";
     return error.message;
   }
   if (error instanceof TypeError) return "Server nicht erreichbar.";

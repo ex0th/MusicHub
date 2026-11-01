@@ -95,11 +95,13 @@ def test_unknown_job_kind_is_dead(db: Session, registry: ConnectorRegistry) -> N
 
 
 def test_connector_error_from_job_is_not_retried(db: Session, registry: ConnectorRegistry) -> None:
-    from musichub.connectors.base import TrackQuery
     from musichub.domain.types import Platform
 
     def search(ctx: JobContext) -> None:
-        ctx.connectors.call(Platform.SPOTIFY, lambda c: c.search_tracks(TrackQuery("a", "b")))
+        ctx.connectors.call(
+            Platform.SPOTIFY,
+            lambda c: c.authorization_url(state="s", code_challenge="c", redirect_uri="r"),
+        )
 
     HANDLERS["test.search"] = search
     try:

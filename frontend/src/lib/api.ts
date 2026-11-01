@@ -3,6 +3,7 @@
 
 import type { TokenProvider } from "./auth";
 import type {
+  AuthSession,
   Availability,
   CandidateStatus,
   Connection,
@@ -67,16 +68,22 @@ export interface ApiClientOptions {
   baseUrl?: string;
   tokens?: TokenProvider;
   fetch?: FetchLike;
+  /** Wird bei 401 aufgerufen (Sitzung abgelaufen oder Token ungültig). */
+  onUnauthorized?: (error: ApiError) => void;
 }
+
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
 export class ApiClient {
   private readonly baseUrl: string;
   private readonly tokens: TokenProvider | undefined;
   private readonly fetchImpl: FetchLike;
+  private readonly onUnauthorized: ((error: ApiError) => void) | undefined;
 
   constructor(options: ApiClientOptions = {}) {
     this.baseUrl = (options.baseUrl ?? "").replace(/\/$/, "");
     this.tokens = options.tokens;
+    this.onUnauthorized = options.onUnauthorized;
     this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
 
@@ -87,10 +94,13 @@ export class ApiClient {
     if (rest.body !== undefined && !(rest.body instanceof FormData) && !headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json");
     }
-    const token = auth ? this.tokens?.getToken() : null;
-    if (token) headers.set("Authorization", `Bearer ${token}`);
+    this.authHeaders(headers, rest.method, auth);
 
-    const response = await this.fetchImpl(`${this.baseUrl}${path}`, { ...rest, headers });
+    const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
+      ...rest,
+      headers,
+      credentials: "same-origin",
+    });
 
     if (response.status === 204) return undefined as T;
     const isJson = (response.headers.get("Content-Type") ?? "").includes("json");
@@ -99,9 +109,28 @@ export class ApiClient {
     // /ready antwortet mit 503 und gültigem JSON-Body – das ist kein Transportfehler.
     if (!response.ok && !(response.status === 503 && path === "/api/health/ready")) {
       const problem = body && typeof body === "object" && "code" in body ? (body as Problem) : null;
-      throw new ApiError(response.status, problem);
+      throw this.fail(new ApiError(response.status, problem), auth);
     }
     return body as T;
+  }
+
+  /** Bearer-Token (dev) oder CSRF-Token der Sitzung (oidc) setzen. */
+  private authHeaders(headers: Headers, method: string | undefined, auth: boolean): void {
+    if (!auth) return;
+    const token = this.tokens?.getToken();
+    if (token) {
+      headers.set("Authorization", `Bearer ${token}`);
+      return;
+    }
+    const csrf = this.tokens?.csrfToken?.();
+    if (csrf && !SAFE_METHODS.has((method ?? "GET").toUpperCase())) {
+      headers.set("X-CSRF-Token", csrf);
+    }
+  }
+
+  private fail(error: ApiError, auth: boolean): ApiError {
+    if (auth && error.status === 401) this.onUnauthorized?.(error);
+    return error;
   }
 
   live(): Promise<LiveResponse> {
@@ -114,6 +143,17 @@ export class ApiClient {
 
   me(): Promise<Me> {
     return this.request("/api/v1/me");
+  }
+
+  // --- Anmeldung -------------------------------------------------------------
+
+  authSession(): Promise<AuthSession> {
+    return this.request("/api/auth/session", { auth: false });
+  }
+
+  /** Meldet ab und liefert das Ziel für den Browser (Authentik-Abmeldung oder Login-Seite). */
+  logout(): Promise<{ redirect: string }> {
+    return this.request("/api/auth/logout", { method: "POST" });
   }
 
   connectors(): Promise<ConnectorStatus[]> {
@@ -510,12 +550,15 @@ export class ApiClient {
   /** Lädt eine Datei mit Token und liefert Inhalt und Dateinamen aus Content-Disposition. */
   async download(path: string): Promise<{ blob: Blob; filename: string }> {
     const headers = new Headers();
-    const token = this.tokens?.getToken();
-    if (token) headers.set("Authorization", `Bearer ${token}`);
-    const response = await this.fetchImpl(`${this.baseUrl}${path}`, { headers });
+    this.authHeaders(headers, "GET", true);
+    const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
+      headers,
+      credentials: "same-origin",
+    });
     if (!response.ok) {
       const isJson = (response.headers.get("Content-Type") ?? "").includes("json");
-      throw new ApiError(response.status, isJson ? ((await response.json()) as Problem) : null);
+      const problem = isJson ? ((await response.json()) as Problem) : null;
+      throw this.fail(new ApiError(response.status, problem), true);
     }
     const disposition = response.headers.get("Content-Disposition") ?? "";
     const match = /filename="([^"]+)"/.exec(disposition);

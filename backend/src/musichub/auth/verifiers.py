@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import hmac
 import logging
-import threading
 from typing import Any, Protocol
 
 import httpx
-import jwt
 
+from musichub.auth.oidc import OidcProvider
 from musichub.auth.principal import Principal
+from musichub.auth.sessions import principal_claims
 from musichub.core.config import AuthMode, Settings
-from musichub.core.errors import ServiceUnavailableError, UnauthorizedError
+from musichub.core.errors import ForbiddenError, UnauthorizedError
 
 log = logging.getLogger(__name__)
 
@@ -42,92 +42,45 @@ class DevTokenVerifier:
 
 
 class OidcVerifier:
-    """Validiert JWT-Access-Tokens gegen das JWKS des OIDC-Providers.
+    """Validiert JWT-Access-Tokens (Bearer) über das JWKS des OIDC-Providers.
 
-    Die Schlüssel werden von PyJWKClient gecacht und bei unbekannter ``kid``
-    automatisch neu geladen (Key-Rotation).
+    Für Skripte und API-Clients. Browser melden sich über den Authorization Code Flow an
+    und nutzen eine serverseitige Sitzung (``auth/sessions.py``).
     """
 
     method = "oidc"
-    _ALGORITHMS = ("RS256", "RS384", "RS512", "ES256", "ES384", "PS256")
 
     def __init__(
         self,
+        provider: OidcProvider,
         *,
-        issuer: str,
-        audience: str,
-        jwks_url: str | None = None,
         write_group: str | None = None,
         groups_claim: str = "groups",
+        required_group: str | None = None,
     ) -> None:
-        self._issuer = issuer.rstrip("/")
-        self._audience = audience
-        self._jwks_url = jwks_url
+        self._provider = provider
         self._write_group = write_group
         self._groups_claim = groups_claim
-        self._client: jwt.PyJWKClient | None = None
-        self._lock = threading.Lock()
-
-    def _discover_jwks_url(self) -> str:
-        url = f"{self._issuer}/.well-known/openid-configuration"
-        try:
-            resp = httpx.get(url, timeout=5.0)
-            resp.raise_for_status()
-            return str(resp.json()["jwks_uri"])
-        except (httpx.HTTPError, KeyError, ValueError) as exc:
-            log.error("OIDC-Discovery fehlgeschlagen (%s): %s", url, exc)
-            raise ServiceUnavailableError("Identity-Provider nicht erreichbar.") from exc
-
-    def _jwk_client(self) -> jwt.PyJWKClient:
-        with self._lock:
-            if self._client is None:
-                url = self._jwks_url or self._discover_jwks_url()
-                self._client = jwt.PyJWKClient(url, cache_keys=True, lifespan=3600)
-            return self._client
+        self._required_group = required_group
 
     def verify(self, token: str) -> Principal:
-        try:
-            signing_key = self._jwk_client().get_signing_key_from_jwt(token)
-        except jwt.PyJWKClientConnectionError as exc:
-            raise ServiceUnavailableError("Identity-Provider nicht erreichbar.") from exc
-        except jwt.PyJWTError as exc:
-            raise UnauthorizedError("Ungültiges Token.") from exc
-
-        try:
-            claims: dict[str, Any] = jwt.decode(
-                token,
-                signing_key.key,
-                algorithms=list(self._ALGORITHMS),
-                audience=self._audience,
-                issuer=self._issuer,
-                options={"require": ["exp", "iss", "sub"]},
-                leeway=30,
-            )
-        except jwt.ExpiredSignatureError as exc:
-            raise UnauthorizedError("Token abgelaufen.") from exc
-        except jwt.PyJWTError as exc:
-            raise UnauthorizedError("Ungültiges Token.") from exc
-
-        return self.principal_from_claims(claims)
+        return self.principal_from_claims(self._provider.verify_access_token(token))
 
     def principal_from_claims(self, claims: dict[str, Any]) -> Principal:
-        raw_groups = claims.get(self._groups_claim) or []
-        groups = (
-            frozenset(str(g) for g in raw_groups) if isinstance(raw_groups, list) else frozenset()
-        )
-        can_write = self._write_group is None or self._write_group in groups
+        subject, name, _email, groups = principal_claims(claims, self._groups_claim)
+        group_set = frozenset(groups)
+        if self._required_group and self._required_group not in group_set:
+            raise ForbiddenError("Kein Zugriff auf MusicHub (Gruppe fehlt).")
         return Principal(
-            subject=str(claims["sub"]),
-            display_name=str(
-                claims.get("preferred_username") or claims.get("name") or claims["sub"]
-            ),
-            groups=groups,
-            can_write=can_write,
+            subject=subject,
+            display_name=name,
+            groups=group_set,
+            can_write=self._write_group is None or self._write_group in group_set,
             auth_method=self.method,
         )
 
 
-def build_verifier(settings: Settings) -> TokenVerifier:
+def build_verifier(settings: Settings, provider: OidcProvider | None = None) -> TokenVerifier:
     if settings.auth_mode is AuthMode.DEV:
         assert settings.dev_auth_token is not None  # durch Settings-Validierung garantiert
         log.warning(
@@ -135,11 +88,27 @@ def build_verifier(settings: Settings) -> TokenVerifier:
             "Nicht für öffentlich erreichbare Instanzen verwenden."
         )
         return DevTokenVerifier(settings.dev_auth_token.get_secret_value(), settings.dev_auth_user)
-    assert settings.oidc_issuer and settings.oidc_audience
+    assert provider is not None
     return OidcVerifier(
-        issuer=settings.oidc_issuer,
-        audience=settings.oidc_audience,
-        jwks_url=settings.oidc_jwks_url,
+        provider,
         write_group=settings.oidc_write_group,
         groups_claim=settings.oidc_groups_claim,
+        required_group=settings.oidc_required_group,
+    )
+
+
+def build_provider(
+    settings: Settings, transport: httpx.BaseTransport | None = None
+) -> OidcProvider | None:
+    if settings.auth_mode is not AuthMode.OIDC:
+        return None
+    assert settings.oidc_issuer and settings.oidc_expected_audience
+    secret = settings.oidc_client_secret
+    return OidcProvider(
+        issuer=settings.oidc_issuer,
+        client_id=settings.oidc_client_id,
+        client_secret=secret.get_secret_value() if secret else None,
+        audience=settings.oidc_expected_audience,
+        jwks_url=settings.oidc_jwks_url,
+        transport=transport,
     )

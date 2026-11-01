@@ -64,7 +64,7 @@ Etappen bauen aufeinander auf. Jede Etappe endet mit grüner CI und einem lauff�
 - Seite „Plattformen“: Status, Konto, letzter Import, importierbare Playlists, Jobs
 - Streng lesend: keine Änderung an Plattform-Playlists (HTTP-Client nur GET, getestet)
 
-## ✅ Etappe 5a – Synchronisierung MusicHub → Plattform (dieser Stand)
+## ✅ Etappe 5a – Synchronisierung MusicHub → Plattform
 
 - Ziele je Playlist (mehrere, auch je Plattform), Modi „nur hinzufügen“ und „vollständig
   abgleichen“ (nur verwaltete, freigegebene Ziele), manuell und geplant
@@ -76,6 +76,17 @@ Etappen bauen aufeinander auf. Jede Etappe endet mit grüner CI und einem lauff�
 - Historie (`sync_runs`), Seite „Synchronisation“ je Playlist
 - Spotify und YouTube schreibend; SoundCloud bewusst nicht
 
+## ✅ Etappe 3 – Produktivbetrieb und Anmeldung (dieser Stand)
+
+- Anmeldung über Authentik: Authorization Code Flow mit PKCE (Backend-for-Frontend),
+  serverseitige Sitzungen, CSRF-Schutz, Ablauf (Leerlauf/absolut), Abmeldung, Login-Seite
+- Härtung: Produktions-Validierung der Konfiguration, Rate-Limits (nginx + Anmeldung),
+  Sicherheits-Header, Swagger in production aus, Request-ID auch bei 500
+- `compose.yaml`: internes DB-Netz, Healthchecks (inkl. Worker-Heartbeat), `cap_drop`,
+  Limits, Log-Rotation; Override für das Netz von Nginx Proxy Manager
+- Skripte: Backup, Wiederherstellung, eigene DB-Rolle ohne Superuser
+- Doku: DEPLOYMENT, BACKUP, SECURITY, TROUBLESHOOTING, Prüfbericht
+
 ## Etappe 2b – Bibliothek ausbauen
 
 - Eigene `artists`-Tabelle (n:m zu Tracks) statt Anzeige-String
@@ -85,11 +96,11 @@ Etappen bauen aufeinander auf. Jede Etappe endet mit grüner CI und einem lauff�
 - Fehlertolerante Suche (`pg_trgm`) für große Sammlungen
 - Paginierte Einträge für sehr große Playlists (> 2 000 Tracks)
 
-## Etappe 3 – Authentik im Frontend
+## Etappe 3b – Mehrbenutzer und Betrieb
 
-- `OidcTokenProvider`: Authorization Code Flow + PKCE, Token-Erneuerung, Logout
-- Konfiguration des Frontends zur Laufzeit (`/config.json` aus nginx)
 - Benutzerbezug: Besitzer von Playlists/Connector-Konten
+- Gruppenänderungen sofort wirksam (Refresh-Token-Prüfung oder Authentik-Webhook)
+- Heartbeat je Job (mehrere Worker sicher), Audit-Log, Docker Secrets (`*_FILE`)
 
 ## Etappe 4b – Konten und Plattformen ausbauen
 
@@ -111,13 +122,14 @@ Etappen bauen aufeinander auf. Jede Etappe endet mit grüner CI und einem lauff�
 
 - Import von Plattform-Playlists in die lokale Sammlung (Richtung Plattform → lokal)
 - Metriken (Prometheus) und Job-Übersicht im Frontend
-- Backup-Job (pg_dump in Volume/S3)
 - API-Client-Typen aus OpenAPI generieren statt `types.ts` von Hand
 
 ## Offene Punkte / bekannte Grenzen
 
-- Frontend-Anmeldung nur im Dev-Modus; mit `oidc` ist die API korrekt geschützt, die UI
-  zeigt dann aber noch keinen Login → bis Etappe 3 Zugang per Reverse Proxy absichern.
+- Vollständige Liste mit Bewertung: [PRUEFBERICHT.md](PRUEFBERICHT.md).
+- Authentik, Spotify, YouTube, SoundCloud und Nginx Proxy Manager sind nur gegen
+  Nachbildungen getestet; der erste echte Test ist das Deployment auf der Ziel-VM.
+- Genau einen Worker betreiben (lange Jobs gelten nach 15 min als hängend).
 - Schreiben nur für Playlist-Inhalte über die Synchronisierung; Importe lesen nur.
 - YouTube-Sync verbraucht 50 Einheiten je Änderung (≈ 200 Änderungen pro Tag); große
   Playlists brauchen mehrere Tage, der Lauf setzt nach dem Zurücksetzen fort.
@@ -131,8 +143,7 @@ Etappen bauen aufeinander auf. Jede Etappe endet mit grüner CI und einem lauff�
   gleichzeitig Musikvideo und Audio auf YouTube); weitere nur als Vorschlag.
 - Playlist-Detail lädt alle Einträge auf einmal.
 - Circuit-Breaker-Zustand ist pro Prozess (API und Worker getrennt), nicht geteilt.
-- Keine Rate-Limits an der eigenen API (hinter Reverse Proxy ergänzen).
-- Kein automatisiertes Backup (der JSON-Export eignet sich als manuelles Backup der Bibliothek).
+- Backup per Skript und Cron ([BACKUP.md](BACKUP.md)), kein eingebauter Backup-Dienst.
 - Import läuft synchron in der Anfrage (bis 20 000 Datensätze); Soundiiz-Exportlayout nur
   aus der Soundiiz-Hilfe abgeleitet, TuneMyMusic aus Drittquellen (siehe IMPORT_EXPORT.md).
 - SoundCloud-IDs aus Fremdexporten (numerisch) werden noch nicht übernommen.

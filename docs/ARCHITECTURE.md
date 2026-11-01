@@ -185,18 +185,30 @@ nicht mehr verfügbar. Seitenleiste ab 900 px, darunter Tab-Leiste unten.
 
 ## Authentifizierung
 
-`auth/verifiers.py` enthält zwei Verifier hinter dem Protokoll `TokenVerifier`:
+Backend-for-Frontend: Der Browser meldet sich über das Backend bei Authentik an
+(Authorization Code Flow mit PKCE, vertraulicher Client) und erhält nur ein
+Sitzungs-Cookie; Tokens von Authentik verlassen den Server nicht.
 
-- `DevTokenVerifier` – zeitkonstanter Vergleich mit `MUSICHUB_DEV_AUTH_TOKEN`.
-- `OidcVerifier` – JWT-Prüfung über JWKS (Discovery über
-  `{issuer}/.well-known/openid-configuration`, Schlüssel gecacht, Key-Rotation).
+```
+auth/oidc.py          OidcProvider: Discovery, JWKS (Cache, Key-Rotation), Code-Tausch,
+                      ID-Token- und Access-Token-Prüfung (nur asymmetrische Signaturen)
+auth/sessions.py      SessionManager: Login-Zustand (auth_logins), Sitzungen
+                      (user_sessions), Cookies, CSRF, Ablauf, Aufräumen
+auth/verifiers.py     Bearer: DevTokenVerifier (dev), OidcVerifier (Access-Tokens)
+auth/dependencies.py  current_principal (Bearer oder Cookie + CSRF), require_write
+api/routes/auth.py    /api/auth/session, /login, /callback, /logout
+```
 
-Endpunkte hängen nur von `current_principal` (lesen) bzw. `require_write` (schreiben) ab.
-Ein Test (`tests/test_api.py`) prüft für **alle** Routen, dass schreibende Methoden
-`require_write` und alle `/api/v1`-Routen eine Anmeldung verlangen.
+Endpunkte hängen nur von `current_principal` (lesen) bzw. `require_write` (schreiben) ab;
+CSRF wird dort für alle verändernden Methoden geprüft. Ein Test (`tests/test_api.py`)
+prüft für **alle** Routen, dass schreibende Methoden `require_write` und alle
+`/api/v1`-Routen eine Anmeldung verlangen. Netzwerkzugriffe auf Authentik laufen über
+einen injizierbaren `httpx`-Transport (`create_app(oidc_transport=…)`, in Tests
+`tests/fake_idp.py`).
 
-Das Frontend kapselt die Token-Herkunft in `TokenProvider` (`frontend/src/lib/auth.ts`);
-ein `OidcTokenProvider` (Authorization Code + PKCE) kommt in einer späteren Etappe dazu.
+Frontend: `lib/auth.ts` (`BrowserAuth`: dev-Token oder CSRF-Cookie), `lib/session.ts`
+(`requireLogin`, Hinweis „Sitzung abgelaufen“, `logout`), Seite `/login/` für Fehler und
+Abmeldung. Sicherheitsmerkmale: [SECURITY.md](SECURITY.md).
 
 ## Logging und Fehler
 
@@ -210,7 +222,9 @@ ein `OidcTokenProvider` (Authorization Code + PKCE) kommt in einer späteren Eta
 
 - Ein Backend-Image für API (`musichub-serve`, migriert vor dem Start) und Worker
   (`musichub-worker`), ein Frontend-Image (nginx-unprivileged, statische Dateien + Proxy).
-- Container laufen als Nicht-Root mit Read-only-Dateisystem.
+- Container laufen als Nicht-Root mit Read-only-Dateisystem, ohne Capabilities; die
+  Datenbank nur im internen Netz. Betrieb: [DEPLOYMENT.md](DEPLOYMENT.md),
+  [BACKUP.md](BACKUP.md), [SECURITY.md](SECURITY.md).
 - `compose.yaml` ohne YAML-Anker/`include`, damit Arcane sie für Updates selbst anpassen kann.
 - CI: Lint/Tests → Image-Build → Smoke-Test des ganzen Stacks mit `compose.yaml` →
   Multi-Arch-Push nach GHCR → optional Arcane-Webhook.

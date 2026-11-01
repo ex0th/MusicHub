@@ -15,7 +15,7 @@ PostgreSQL 17, Zugriff über SQLAlchemy 2 (synchron, psycopg 3), Migrationen mit
   (Links eines Tracks, Einträge einer Playlist). Ein Track in einer Playlist ist mit
   `RESTRICT` geschützt.
 
-## Schema (Revision `0006`)
+## Schema (Revision `0007`)
 
 ```
                 tags
@@ -38,6 +38,7 @@ connector_accounts (eine Zeile je Plattform)    oauth_states (laufende Anmeldung
 remote_playlists ──(SET NULL)──> playlists, import_runs
 sync_runs ──(SET NULL)──> playlist_targets, playlists
 platform_lookups ──(CASCADE)──> tracks
+user_sessions (Anmeldesitzungen)    auth_logins (laufende OIDC-Logins)
 ```
 
 ### `tracks` – die lokale Sammlung
@@ -131,6 +132,18 @@ mitgeschrieben), `platform`, `remote_playlist_id`, `remote_name`, `trigger`, `st
 Je `(track_id, platform)` (CASCADE): `status` (`found` | `candidate` | `not_found` |
 `api_error`), gefundene `external_id`, `confidence`, `message`, `checked_at`. Kein Eintrag =
 „noch nicht geprüft“.
+
+### `user_sessions` – Anmeldesitzungen (Browser)
+
+`token_hash` (SHA-256 des Cookie-Tokens, unique), `subject`, `display_name`, `email`,
+`groups` (jsonb), `can_write`, `created_at`, `last_seen_at` (höchstens minütlich
+aktualisiert), `expires_at` (absolutes Ende). Abgelaufen = `expires_at` erreicht oder
+`last_seen_at` älter als `MUSICHUB_SESSION_IDLE_MINUTES`; der Worker löscht stündlich.
+
+### `auth_logins` – laufende Anmeldungen
+
+`state_hash` (unique), `browser_hash` (Bindungs-Cookie), `nonce`, `return_to`,
+`created_at`, `expires_at` (10 min). Einmalig: wird beim Rückruf gelöscht.
 
 ### `jobs` – Hintergrundjobs
 
@@ -230,7 +243,7 @@ Regeln:
   Die CI prüft mit `alembic check`, dass nichts fehlt.
 - Generierte Migrationen immer lesen und nachbessern (Datenmigrationen, Defaults für
   neue Pflichtspalten, CHECK-Constraints).
-- Revisionen fortlaufend benennen (`0006_…`): `alembic revision --autogenerate --rev-id 0006 -m "…"`.
+- Revisionen fortlaufend benennen (`0008_…`): `alembic revision --autogenerate --rev-id 0008 -m "…"`.
 - Migrationen müssen auf einer Datenbank mit Bestandsdaten funktionieren und eine
   sinnvolle `downgrade()` haben. Beispiel: `0002` überführt `platform_links` mit allen
   Daten nach `track_sources` und normalisiert bestehende Playlist-Positionen.

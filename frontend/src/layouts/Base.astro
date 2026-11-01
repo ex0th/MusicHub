@@ -1,7 +1,7 @@
 ---
 import "../styles/global.css";
 
-export type Section = "dashboard" | "library" | "playlists" | "matching" | "platforms" | "settings";
+export type Section = "dashboard" | "library" | "playlists" | "matching" | "platforms" | "settings" | "login";
 
 interface Props {
   title: string;
@@ -68,7 +68,10 @@ const nav: { id: Section; href: string; label: string; icon: string }[] = [
           ))
         }
       </nav>
-      <div class="session" id="session-indicator" data-state="anonymous">Nicht angemeldet</div>
+      <div class="session" id="session-indicator" data-state="anonymous">
+        <span id="session-name">Nicht angemeldet</span>
+        <button type="button" class="ghost session-logout" id="session-logout" hidden>Abmelden</button>
+      </div>
     </aside>
 
     <main id="main">
@@ -78,21 +81,28 @@ const nav: { id: Section; href: string; label: string; icon: string }[] = [
     <div id="toasts" class="toasts" aria-live="polite"></div>
 
     <script>
-      import { createSession } from "../lib/session";
+      import { createSession, hasCredentials, logout } from "../lib/session";
+      import { errorMessage, toast } from "../lib/ui";
       const indicator = document.getElementById("session-indicator");
+      const name = document.getElementById("session-name");
+      const logoutButton = document.getElementById("session-logout");
       const { api, tokens } = createSession();
-      if (indicator && tokens.getToken()) {
+      if (indicator && name && hasCredentials(tokens)) {
         api
           .me()
           .then((me) => {
-            indicator.textContent = me.can_write ? me.display_name : `${me.display_name} (nur lesen)`;
+            name.textContent = me.can_write ? me.display_name : `${me.display_name} (nur lesen)`;
             indicator.dataset["state"] = "authenticated";
+            if (logoutButton) logoutButton.hidden = false;
           })
           .catch(() => {
-            indicator.textContent = "Token ungültig";
+            name.textContent = "Nicht angemeldet";
             indicator.dataset["state"] = "error";
           });
       }
+      logoutButton?.addEventListener("click", () => {
+        logout(api, tokens).catch((err: unknown) => toast(errorMessage(err), "error"));
+      });
     </script>
   </body>
 </html>

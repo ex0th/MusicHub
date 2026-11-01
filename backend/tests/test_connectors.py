@@ -16,7 +16,6 @@ from musichub.connectors.base import (
     ConnectorAuthError,
     ConnectorError,
     ConnectorNotConfiguredError,
-    ConnectorNotImplementedError,
     OAuthTokens,
     RateLimitedError,
     RemoteAccount,
@@ -303,10 +302,6 @@ def test_connectors_never_write_to_platform_apis(settings: Settings, fake: FakeP
             if playlist.items_accessible:
                 list(connector.iter_playlist_tracks(tokens.access_token, playlist.external_id))
         connector.refresh_tokens("refresh-1")
-        with pytest.raises(ConnectorNotImplementedError):
-            connector.create_playlist("x")
-        with pytest.raises(ConnectorNotImplementedError):
-            connector.replace_playlist_tracks("x", ["1"])
     assert fake.api_requests(), "Erwartet API-Aufrufe"
     assert {r.method for r in fake.api_requests()} == {"GET"}
     assert {r.url.host for r in fake.requests if r.method != "GET"} <= TOKEN_HOSTS

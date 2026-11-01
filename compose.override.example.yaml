@@ -1,0 +1,24 @@
+# Optional: Frontend in das Docker-Netz von Nginx Proxy Manager hängen.
+#
+# Dann leitet NPM direkt an  http://musichub-frontend-1:8080  (Containername) weiter und
+# der Port auf dem Host wird nicht gebraucht. Verwendung:
+#
+#   cp compose.override.example.yaml compose.override.yaml
+#   # Netznamen prüfen:  docker network ls   (z. B. npm_default oder proxy)
+#   docker compose up -d
+#
+# docker compose liest compose.override.yaml automatisch mit. Wird MusicHub über Arcane
+# verwaltet, die Override-Datei dort ebenfalls hinterlegen (siehe docs/DEPLOYMENT.md).
+
+services:
+  frontend:
+    networks:
+      - web
+      - proxy
+    # Port auf dem Host abschalten (nur über das Proxy-Netz erreichbar)
+    ports: !reset []
+
+networks:
+  proxy:
+    external: true
+    name: ${MUSICHUB_PROXY_NETWORK:-npm_default}

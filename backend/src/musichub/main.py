@@ -6,10 +6,12 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from musichub.api.routes import (
+    auth,
     connections,
     exports,
     health,
@@ -21,19 +23,25 @@ from musichub.api.routes import (
     tags,
     tracks,
 )
-from musichub.auth.verifiers import build_verifier
+from musichub.auth.sessions import SessionManager
+from musichub.auth.verifiers import build_provider, build_verifier
 from musichub.connectors.platforms import default_connectors
 from musichub.connectors.registry import ConnectorRegistry
-from musichub.core.config import AppEnv, Settings, get_settings
+from musichub.core.config import Settings, get_settings
 from musichub.core.errors import register_exception_handlers
 from musichub.core.logging import configure_logging
-from musichub.core.middleware import RequestContextMiddleware
+from musichub.core.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
+from musichub.core.ratelimit import RateLimiter
 
 log = logging.getLogger("musichub")
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None, *, oidc_transport: httpx.BaseTransport | None = None
+) -> FastAPI:
+    """App bauen. ``oidc_transport`` ersetzt in Tests das Netzwerk zum Identity-Provider."""
     settings = settings or get_settings()
+    provider = build_provider(settings, oidc_transport)
     configure_logging(settings.log_level, settings.log_format)
 
     @asynccontextmanager
@@ -45,21 +53,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             settings.build_sha,
         )
         yield
+        if provider is not None:
+            provider.close()
         log.info("MusicHub API beendet")
 
-    # OpenAPI/Swagger ist read-only und enthält keine Geheimnisse; Aufrufe brauchen ein Token.
+    # OpenAPI/Swagger enthält keine Geheimnisse; in production standardmäßig aus.
+    docs = settings.api_docs_enabled
     app = FastAPI(
         title="MusicHub API",
         description="Selbst gehostete, plattformunabhängige Musikverwaltung.",
         version=health.APP_VERSION,
         lifespan=lifespan,
-        docs_url="/api/docs",
+        docs_url="/api/docs" if docs else None,
         redoc_url=None,
-        openapi_url="/api/openapi.json",
+        openapi_url="/api/openapi.json" if docs else None,
     )
 
     app.state.settings = settings
-    app.state.verifier = build_verifier(settings)
+    app.state.oidc = provider
+    app.state.verifier = build_verifier(settings, provider)
+    app.state.sessions = SessionManager(settings) if settings.oidc_login_enabled else None
+    app.state.auth_limiter = RateLimiter(settings.auth_rate_limit_per_minute)
     app.state.connectors = ConnectorRegistry(default_connectors(settings))
 
     register_exception_handlers(app)
@@ -69,11 +83,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             allow_origins=settings.cors_origins,
             allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
             allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+            # Sitzungs-Cookies nie an andere Origins: fremde Clients nutzen Bearer-Tokens
+            allow_credentials=False,
             expose_headers=["X-Request-ID"],
         )
+    app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(RequestContextMiddleware)
 
     app.include_router(health.router)
+    app.include_router(auth.router)
     app.include_router(system.router)
     app.include_router(tracks.router)
     app.include_router(playlists.router)
@@ -85,8 +103,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(connections.oauth_router)
     app.include_router(sync.router)
 
-    if settings.app_env is AppEnv.PRODUCTION and settings.cors_origins == ["*"]:
-        log.warning("CORS erlaubt alle Origins in production – bitte einschränken.")
+    if settings.auth_mode.value == "oidc" and not settings.oidc_login_enabled:
+        log.warning(
+            "OIDC ohne Browser-Anmeldung: MUSICHUB_OIDC_CLIENT_ID, MUSICHUB_OIDC_CLIENT_SECRET "
+            "und MUSICHUB_PUBLIC_URL setzen. Bis dahin sind nur Bearer-Tokens möglich."
+        )
     return app
 
 
