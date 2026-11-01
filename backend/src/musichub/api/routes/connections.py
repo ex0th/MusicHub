@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import Literal
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -124,9 +125,11 @@ def list_connections(
     _: Principal = Depends(current_principal),
 ) -> list[ConnectionOut]:
     settings = _settings(request)
+    registry = _registry(request)
     result = []
-    for s in service.statuses(db, settings, _registry(request)):
+    for s in service.statuses(db, settings, registry):
         a = s.account
+        connector = registry.get(s.platform)
         result.append(
             ConnectionOut(
                 platform=s.platform,
@@ -151,6 +154,11 @@ def list_connections(
                 )
                 if a
                 else None,
+                read_only=not settings.sync_write_enabled(s.platform.value),
+                sync_supported=bool(connector.write_scopes),
+                write_enabled=bool(connector.write_scopes)
+                and settings.sync_write_enabled(s.platform.value),
+                write_granted=bool(a) and connector.has_write_scope(a.scopes if a else None),
                 playlists=s.playlists,
                 imported=s.imported,
                 changed=s.changed,
@@ -172,11 +180,17 @@ def list_connections(
 def authorize(
     platform: Platform,
     request: Request,
+    access: Literal["read", "write"] = "read",
     db: Session = Depends(get_db),
     principal: Principal = Depends(require_write),
 ) -> AuthorizeOut:
     url = service.start_authorization(
-        db, _settings(request), _registry(request), platform, principal
+        db,
+        _settings(request),
+        _registry(request),
+        platform,
+        principal,
+        write=access == "write",
     )
     db.commit()
     return AuthorizeOut(authorize_url=url)

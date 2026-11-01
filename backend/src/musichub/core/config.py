@@ -79,6 +79,13 @@ class Settings(BaseSettings):
     #: Nur mit eigener SoundCloud-API-App (setzt laut SoundCloud Artist Pro voraus)
     soundcloud_client_id: str | None = None
     soundcloud_client_secret: SecretStr | None = None
+    #: Plattformen, auf die die Synchronisierung schreiben darf (kommagetrennt, z. B.
+    #: "spotify,youtube"). Leer = nur Vorschau (Dry-Run), nichts wird verändert.
+    sync_write_platforms: str = ""
+    #: Wie oft der Worker nach fälligen geplanten Synchronisierungen sucht (Sekunden)
+    sync_scheduler_interval_seconds: float = Field(default=60.0, ge=5, le=3600)
+    #: Höchstzahl Plattform-Suchen für nicht verknüpfte Tracks je Lauf
+    sync_lookup_limit: int = Field(default=50, ge=0, le=500)
     #: Zeitlimit je Plattform-Anfrage in Sekunden
     connector_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
 
@@ -89,6 +96,10 @@ class Settings(BaseSettings):
     # --- Hintergrundjobs -----------------------------------------------------
     worker_poll_interval_seconds: float = 2.0
     worker_max_attempts: int = 5
+
+    def sync_write_enabled(self, platform: str) -> bool:
+        allowed = {p.strip().lower() for p in self.sync_write_platforms.split(",") if p.strip()}
+        return platform.lower() in allowed
 
     @property
     def oauth_redirect_base(self) -> str | None:

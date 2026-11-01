@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from urllib.parse import parse_qs, urlsplit
 
@@ -239,7 +240,7 @@ def test_youtube_quota_exhaustion_waits_until_reset(
     with pytest.raises(RateLimitedError) as err:
         c.list_playlists("access-1", RemoteAccount("x", "x"))
     assert err.value.retry_after and err.value.retry_after > 60
-    assert "Tageskontingent" in err.value.message
+    assert "Kontingent" in err.value.message
 
 
 def test_youtube_revoke(settings: Settings, fake: FakePlatforms) -> None:
@@ -328,3 +329,65 @@ def test_token_cipher_roundtrip_and_rotation() -> None:
         TokenCipher([])
     with pytest.raises(TokenCipherError):
         TokenCipher(["zu-kurz"])
+
+
+# --- Schreiben (nur Synchronisierung) -------------------------------------------------------------
+
+
+def test_spotify_write_chunks_and_scopes(settings: Settings, fake: FakePlatforms) -> None:
+    c = SpotifyConnector(settings, transport=fake.transport)
+    url = c.authorization_url(
+        state="s", code_challenge="c", redirect_uri="https://x/cb", write=True
+    )
+    assert "playlist-modify-private" in query(url)["scope"]
+    assert "user-library-modify" not in query(url)["scope"]  # nie Bibliothek
+    assert c.has_write_scope("playlist-read-private playlist-modify-private playlist-modify-public")
+    assert not c.has_write_scope("playlist-read-private playlist-read-collaborative")
+    created = c.create_remote_playlist("access-1", "Neu", None)
+    ids = [f"{n:0>22}" for n in range(1, 151)]
+    c.replace_playlist("access-1", created.external_id, ids)
+    methods = [
+        (r.method, len(json.loads(r.content).get("uris", [])))
+        for r in fake.requests
+        if r.method in {"PUT", "POST"} and r.url.path.endswith("/items")
+    ]
+    assert methods == [("PUT", 100), ("POST", 50)]
+    assert len(fake.sp_contents[created.external_id]) == 150
+    body = json.loads(
+        next(
+            r for r in fake.requests if r.url.path == "/v1/me/playlists" and r.method == "POST"
+        ).content
+    )
+    assert body["public"] is False  # neue Playlists sind privat
+
+
+def test_youtube_write_scope_and_private_playlist(settings: Settings, fake: FakePlatforms) -> None:
+    c = YouTubeConnector(settings, transport=fake.transport)
+    url = c.authorization_url(
+        state="s", code_challenge="c", redirect_uri="https://x/cb", write=True
+    )
+    assert query(url)["scope"] == "https://www.googleapis.com/auth/youtube"
+    created = c.create_remote_playlist("access-1", "Neu", "Beschreibung")
+    body = json.loads(fake.requests[-1].content)
+    assert body["status"]["privacyStatus"] == "private"
+    c.add_to_playlist("access-1", created.external_id, ["vidAAAAAAAA"])
+    tracks = [t for p in c.iter_playlist_tracks("access-1", created.external_id) for t in p.tracks]
+    assert tracks[0].item_id and tracks[0].external_id == "vidAAAAAAAA"
+
+
+def test_write_timeout_is_not_retried() -> None:
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        raise httpx.ReadTimeout("langsam")
+
+    client = ApiClient(
+        Platform.SPOTIFY,
+        "https://api.spotify.com/v1",
+        timeout=1,
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(ConnectorError) as err:
+        client.write("POST", "playlists/x/items", "t", json={"uris": []})
+    assert not err.value.retryable and calls == [1]

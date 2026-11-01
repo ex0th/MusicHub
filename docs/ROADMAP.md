@@ -51,7 +51,7 @@ Etappen bauen aufeinander auf. Jede Etappe endet mit grüner CI und einem lauff�
 - Bereich „Matching“: Gegenüberstellung, Gründe, Bestätigen/Ablehnen/Später prüfen, Verlauf,
   manueller Vergleich
 
-## ✅ Etappe 4a – Plattform-Connectoren, lesend (dieser Stand)
+## ✅ Etappe 4a – Plattform-Connectoren, lesend
 
 - Spotify Web API (Development-Mode-Regeln 2026 berücksichtigt), YouTube Data API v3,
   SoundCloud vorbereitet (Artist Pro nötig, kein Umgehungsweg) – Details in CONNECTORS.md
@@ -63,6 +63,18 @@ Etappen bauen aufeinander auf. Jede Etappe endet mit grüner CI und einem lauff�
   Metadaten-/Verfügbarkeitsabgleich verknüpfter Tracks
 - Seite „Plattformen“: Status, Konto, letzter Import, importierbare Playlists, Jobs
 - Streng lesend: keine Änderung an Plattform-Playlists (HTTP-Client nur GET, getestet)
+
+## ✅ Etappe 5a – Synchronisierung MusicHub → Plattform (dieser Stand)
+
+- Ziele je Playlist (mehrere, auch je Plattform), Modi „nur hinzufügen“ und „vollständig
+  abgleichen“ (nur verwaltete, freigegebene Ziele), manuell und geplant
+- Freigaben: `MUSICHUB_SYNC_WRITE_PLATFORMS`, Schreib-Scopes beim Verbinden, bestätigte
+  Vorschau vor dem ersten Schreiben, Zustimmung bei externen Änderungen
+- Dry-Run, Konflikterkennung über bekannte Einträge, Duplikatvermeidung, idempotente Läufe
+- Fehlende Tracks: Suche (Spotify ISRC/Titel, YouTube) mit Matching-Engine, Status
+  ungeprüft/nicht gefunden/API-Fehler/Vorschlag/unverfügbar, erneute Prüfung
+- Historie (`sync_runs`), Seite „Synchronisation“ je Playlist
+- Spotify und YouTube schreibend; SoundCloud bewusst nicht
 
 ## Etappe 2b – Bibliothek ausbauen
 
@@ -79,24 +91,20 @@ Etappen bauen aufeinander auf. Jede Etappe endet mit grüner CI und einem lauff�
 - Konfiguration des Frontends zur Laufzeit (`/config.json` aus nginx)
 - Benutzerbezug: Besitzer von Playlists/Connector-Konten
 
-## Etappe 4b – Schreiben und Suche
+## Etappe 4b – Konten und Plattformen ausbauen
 
-- Playlists auf Plattformen anlegen/ersetzen (eigene Freigabe, zusätzliche Scopes)
-- Suche/ISRC-Lookup je Plattform für fehlende Verknüpfungen (Spotify-Suche: max. 10 je Seite)
 - SoundCloud-Metadatenabgleich über `/resolve`, „Lieblingssongs“ (Spotify) optional
 - Konten pro Benutzer (mit Etappe 3), mehrere Konten je Plattform
+- SoundCloud als Sync-Ziel, sobald ein zulässiger API-Zugang geprüft werden kann
 
-## Etappe 5 – Matching und Sync produktiv
+## Etappe 5b – Sync ausbauen
 
-- Job `matching.find_candidates`: Plattform-Tracks (Connector-Suche) je lokalem Track mit
-  derselben Engine bewerten, `candidate`-Links zum Bestätigen/Ablehnen
-- Job `sync.playlist` pro Ziel und Plattform, Ausführung des `SyncPlan`, Historie in `sync_runs`
-- Geplante Syncs (Zeitplan je Playlist), Anzeige von Sync-Historie und Fehlern
-- Verfügbarkeitsprüfung bestehender Links (`unavailable`)
+- Vorschläge (`candidate`) aus der Suche direkt auf der Sync-Seite bestätigen
+- Spotify-Ersetzen gezielter (`snapshot_id`, Reihenfolge per Reorder statt Ersetzen)
+- Benachrichtigung bei Konflikten geplanter Läufe
 
-## Etappe 6 – SoundCloud und YouTube schreibend
+## Etappe 6 – SoundCloud
 
-- YouTube: Schreibzugriff (`playlists.insert` kostet 50 Einheiten) mit Kontingentplanung
 - SoundCloud-Connector mit echten Zugangsdaten verifizieren (bisher nur nachgebildet getestet)
 
 ## Später / Ideen
@@ -110,7 +118,10 @@ Etappen bauen aufeinander auf. Jede Etappe endet mit grüner CI und einem lauff�
 
 - Frontend-Anmeldung nur im Dev-Modus; mit `oidc` ist die API korrekt geschützt, die UI
   zeigt dann aber noch keinen Login → bis Etappe 3 Zugang per Reverse Proxy absichern.
-- Connectoren lesen nur (Playlists, Inhalte, Metadaten); Schreiben/Suche folgen.
+- Schreiben nur für Playlist-Inhalte über die Synchronisierung; Importe lesen nur.
+- YouTube-Sync verbraucht 50 Einheiten je Änderung (≈ 200 Änderungen pro Tag); große
+  Playlists brauchen mehrere Tage, der Lauf setzt nach dem Zurücksetzen fort.
+- Plattform-Suche nur für Spotify und YouTube, höchstens `MUSICHUB_SYNC_LOOKUP_LIMIT` je Lauf.
 - Ein Konto je Plattform und Instanz; Spotify im Development Mode max. 5 Nutzer und nur
   eigene/kollaborative Playlists; YouTube im Status „Testing“ Anmeldung 7 Tage gültig.
 - SoundCloud nur mit eigener API-App (Artist Pro) und bisher nur gegen nachgebildete

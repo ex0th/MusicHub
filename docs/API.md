@@ -203,7 +203,7 @@ den Plattformen lesend; Netzwerkzugriffe laufen als Hintergrundjob (Antwort `202
 | Methode | Pfad | Beschreibung |
 |---|---|---|
 | GET | `/api/v1/connections` | Je Plattform: `configured`, `missing` (fehlende Variablen), `redirect_uri`, `account` (ohne Tokens), Zähler `playlists`, `imported`, `changed`, `failed`, `active_jobs` |
-| POST | `/api/v1/connections/{platform}/authorize` | `{authorize_url}` – Browser dorthin leiten; nicht eingerichtet → `422` mit `missing` |
+| POST | `/api/v1/connections/{platform}/authorize?access=read\|write` | `{authorize_url}` – Browser dorthin leiten; nicht eingerichtet → `422` mit `missing`. `write` fordert Playlist-Schreibrechte an (nur wenn in `MUSICHUB_SYNC_WRITE_PLATFORMS`, sonst `422`) |
 | GET | `/api/oauth/callback/{platform}` | Rückruf der Plattform (öffentlich, über einmaligen `state` geschützt) → `303` nach `/platforms/?platform=…&connected=1` bzw. `&error=invalid_state\|expired\|denied\|invalid_request\|exchange_failed` |
 | DELETE | `/api/v1/connections/{platform}` | Trennen: Tokens löschen (YouTube: widerrufen) → `{revoked}`; importierte Daten bleiben |
 | GET | `/api/v1/connections/{platform}/playlists?include_removed=` | Playlists des Kontos mit Importzustand (`items_accessible`, `local_playlist_id`, `up_to_date`, `last_import_status`, `last_error`) |
@@ -215,6 +215,29 @@ den Plattformen lesend; Netzwerkzugriffe laufen als Hintergrundjob (Antwort `202
 
 Ohne verbundenes Konto antworten die Job-Endpunkte mit `409`, ebenso wenn das Konto neu
 verbunden werden muss.
+
+### Synchronisierung
+
+Regeln, Freigaben und Modi: [SYNC.md](SYNC.md). Alle Pfade unter
+`/api/v1/playlists/{playlist_id}/sync`.
+
+| Methode | Pfad | Beschreibung |
+|---|---|---|
+| GET | `/targets` | Ziele mit `write_ready`, `write_blockers`, `needs_confirmation`, `active_run_id`, letztem Status |
+| POST | `/targets` | `{platform, create_new \| remote_playlist_id, remote_name?, mode, mirror_allowed?, schedule_minutes?, enabled?}` → `201`; `mirror` nur für neue + freigegebene Ziele (`422`), Plattform-Playlist schon Ziel → `409`, SoundCloud → `422` |
+| PATCH | `/targets/{id}` | `enabled`, `mode`, `mirror_allowed`, `schedule_minutes` (≥ 60) bzw. `manual_only` |
+| DELETE | `/targets/{id}` | `204` – nur die Einstellung; Plattform-Playlist und Historie bleiben |
+| POST | `/targets/{id}/preview` | Dry-Run als Job → `202` Lauf |
+| POST | `/targets/{id}/sync` | `{preview_run_id?, approve_external_changes?}` → `202` Lauf. `409` mit `blockers` (Freigaben fehlen) bzw. `needs_confirmation` (erste Vorschau nicht bestätigt) |
+| GET | `/runs?target_id=&limit=&offset=` | Historie, neueste zuerst |
+| GET | `/runs/{run_id}` | Lauf mit `plan` (Vorschau) |
+| GET | `/unresolved?platform=` | nicht übertragbare Tracks mit `reason` (`unchecked`, `not_found`, `api_error`, `candidate`, `unavailable`), möglichem Treffer und Links anderer Plattformen |
+| POST | `/recheck?platform=` | `{track_ids}` – Suchergebnisse verwerfen → `{reset}` |
+
+`plan`: `create_playlist`, `add[]` (mit `new_link`), `remove[]` (mit `external`),
+`reorder`, `unresolved[]`, `duplicates_skipped`, `already_present`, `external_added[]`,
+`external_removed[]`, `not_readded[]`, `requires_approval`, `noop`, `first_sync`,
+`quota_units` (YouTube).
 
 ### Matching
 

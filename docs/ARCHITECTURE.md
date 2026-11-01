@@ -47,7 +47,7 @@
 | 3 | Datenbank | `musichub.models`, `musichub.db`, `musichub/migrations` | Schema, Sessions, Migrationen | `domain` |
 | 4 | Connectoren | `musichub.connectors` | Plattform-APIs, liefern neutrale DTOs | `domain`, `core` – **nicht** `db` |
 | 5 | Matching-Engine | `musichub.matching` | Gleiche Aufnahme/Version erkennen, Kandidatensuche (rein) | `domain` |
-| 6 | Synchronisations-Engine | `musichub.sync` | Soll/Ist-Abgleich planen | `domain` |
+| 6 | Synchronisation | `musichub.sync` | Planung (rein), Ziele, Ausführung als Job | `engine`: `domain`; `service`/`executor`: `models`, `connections`, `matching` |
 | 7 | Hintergrundjobs | `musichub.jobs` | Queue, Worker, Job-Handler | alle außer `api` |
 
 Querschnitt: `musichub.core` (Konfiguration, Logging, Fehler, Middleware),
@@ -144,11 +144,20 @@ für „mögliche Duplikate“ und plant nach dem Commit den Job `matching.scan`
 
 ## Synchronisation
 
-Richtung: **lokal → Plattform**. `sync/engine.py::plan_playlist_sync` erhält die lokale
-Soll-Liste (mit externen IDs aus bestätigten Links) und den Ist-Zustand der Plattform und
-liefert einen `SyncPlan` (Soll-Reihenfolge, hinzufügen, entfernen, Reihenfolge geändert,
-nicht auflösbare Tracks). Tracks ohne Link werden übersprungen und gemeldet – lokal
-bleiben sie vollständig erhalten. Ausgeführt wird der Plan von einem Job.
+Richtung: **MusicHub → Plattform** (Details, Freigaben und Modi: [SYNC.md](SYNC.md)).
+
+```
+sync/engine.py    plan_sync(): add_only | mirror, externe Änderungen, Duplikate,
+                  reorder_moves()                                          (rein)
+sync/service.py   Ziele, Schreib-Freigaben, Vorschau/Sync anfordern, Zeitplan, Historie
+sync/executor.py  Job sync.run: Playlist lesen → Tracks bestimmen (Links, Suche) →
+                  Ziel lesen → planen → Vorschau | ausführen → prüfen → dokumentieren
+```
+
+Schreiben nur, wenn Plattform in `MUSICHUB_SYNC_WRITE_PLATFORMS`, Konto mit Schreib-Scopes,
+Ziel aktiviert und erste Vorschau bestätigt. Schreibaufrufe (`ApiClient.write`) werden nie
+automatisch wiederholt; nur Rate-Limits führen zu einem zeitversetzten Neuversuch, der neu
+plant (idempotent). Der Worker plant fällige Ziele (`enqueue_due`) selbst ein.
 
 ## Hintergrundjobs
 

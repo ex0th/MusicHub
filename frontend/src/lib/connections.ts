@@ -5,13 +5,13 @@ import type { Connection, Job, Platform, RemotePlaylist } from "./types";
 /** Ehrliche Hinweise zu Voraussetzungen und Grenzen der offiziellen APIs. */
 export const PLATFORM_NOTES: Record<Platform, string[]> = {
   spotify: [
-    "Offizielle Spotify Web API, nur lesend (Scopes: eigene und kollaborative Playlists lesen).",
+    "Offizielle Spotify Web API. Import liest nur (eigene und kollaborative Playlists); für die Synchronisierung kommen auf Wunsch Schreibrechte für Playlists hinzu – nie für Bibliothek oder Likes.",
     "Development Mode: Der Besitzer der Spotify-App braucht Premium, höchstens 5 Nutzer.",
     "Inhalte sind nur bei eigenen oder kollaborativen Playlists lesbar; bei fremden Playlists liefert Spotify nur Name und Anzahl.",
     "„Lieblingssongs“ werden nicht gelesen.",
   ],
   youtube: [
-    "Offizielle YouTube Data API v3, nur lesend (Scope youtube.readonly).",
+    "Offizielle YouTube Data API v3. Import mit youtube.readonly; für die Synchronisierung auf Wunsch der Scope youtube (jeder geschriebene Eintrag kostet 50 Einheiten).",
     "Gelesen werden die YouTube-Playlists deines Kanals. In YouTube Music angelegte Playlists erscheinen dort in der Regel auch – die YouTube-Music-Mediathek (Alben, Künstler, „Mag ich“-Musik, Uploads) stellt die offizielle API nicht bereit.",
     "Tageskontingent 10 000 Einheiten (1 Einheit je 50 Einträge). Ist es erschöpft, setzt der Import nach Mitternacht (pazifische Zeit) fort.",
     "Solange die Google-App im Status „Testing“ ist, läuft die Anmeldung nach 7 Tagen ab.",

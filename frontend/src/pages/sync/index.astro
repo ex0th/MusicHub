@@ -1,0 +1,882 @@
+---
+import Base from "../../layouts/Base.astro";
+---
+
+<Base title="Synchronisation" section="playlists">
+  <div id="content">
+    <div class="page-head">
+      <div>
+        <a class="crumb" id="back" href="/playlists/">Playlists</a>
+        <h1 id="title">Synchronisation</h1>
+        <p class="lede">
+          Überträgt diese Playlist von MusicHub auf Spotify oder YouTube. Die Richtung ist immer
+          MusicHub → Plattform: In MusicHub wird nie etwas gelöscht, und vor dem ersten
+          Schreiben siehst du eine Vorschau.
+        </p>
+      </div>
+    </div>
+
+    <section aria-labelledby="targets-title">
+      <h2 id="targets-title">Ziele</h2>
+      <div id="targets" class="sy-targets"><p class="empty">Lade …</p></div>
+    </section>
+
+    <section aria-labelledby="add-title">
+      <h2 id="add-title">Ziel hinzufügen</h2>
+      <form class="panel sy-add" id="add-form" novalidate>
+        <div class="form-grid">
+          <label class="field span-2">Plattform
+            <select name="platform" id="add-platform"></select>
+          </label>
+          <label class="field span-2">Zielplaylist
+            <select name="target" id="add-target"></select>
+          </label>
+          <label class="field span-2" id="add-name-field">Name der neuen Playlist
+            <input name="remote_name" id="add-name" maxlength="150" />
+          </label>
+          <label class="field span-3">Modus
+            <select name="mode" id="add-mode">
+              <option value="add_only">Nur neue Tracks hinzufügen</option>
+              <option value="mirror">Änderungen vollständig abgleichen</option>
+            </select>
+          </label>
+          <label class="field span-3">Zeitplan
+            <select name="schedule" id="add-schedule"></select>
+          </label>
+        </div>
+        <label class="sy-check" id="add-mirror-field">
+          <input type="checkbox" name="mirror_allowed" id="add-mirror" />
+          <span>Diese neue, von MusicHub verwaltete Playlist darf vollständig abgeglichen werden
+            (Entfernen und Umsortieren auf der Plattform).</span>
+        </label>
+        <p class="faint sy-hint" id="add-hint"></p>
+        <p class="form-error" id="add-error" role="alert"></p>
+        <div class="actions"><button type="submit" id="add-submit">Ziel hinzufügen</button></div>
+      </form>
+    </section>
+
+    <section aria-labelledby="unresolved-title">
+      <h2 id="unresolved-title">Nicht übertragbare Tracks</h2>
+      <p class="muted">Diese Tracks bleiben in MusicHub, werden aber nicht übertragen. Bekannte
+        Links auf anderen Plattformen helfen beim manuellen Zuordnen in der Track-Ansicht.</p>
+      <div id="unresolved"></div>
+    </section>
+
+    <section aria-labelledby="history-title">
+      <h2 id="history-title">Historie</h2>
+      <div id="history"></div>
+    </section>
+  </div>
+</Base>
+
+<script>
+  import { platformLabel } from "../../lib/platforms";
+  import { createSession, requireLogin } from "../../lib/session";
+  import {
+    MODE_TEXT,
+    REASON_TEXT,
+    SCHEDULES,
+    STATUS_TEXT,
+    canSyncFromPreview,
+    hasPlan,
+    isActive,
+    planSummary,
+    runSummary,
+    scheduleText,
+  } from "../../lib/sync";
+  import type {
+    Connection,
+    Platform,
+    PlanRemote,
+    RemotePlaylist,
+    SyncMode,
+    SyncPlan,
+    SyncRun,
+    SyncTarget,
+  } from "../../lib/types";
+  import { $, confirmDialog, errorMessage, formatDateTime, h, param, plural, toast } from "../../lib/ui";
+
+  const { api, tokens } = createSession();
+  const playlistId = param("id") ?? "";
+  let connections: Connection[] = [];
+  let targets: SyncTarget[] = [];
+  /** zuletzt angezeigte Vorschau/Details je Ziel */
+  const shown = new Map<string, SyncRun>();
+  /** neuester Lauf je Ziel – nur dessen Vorschau darf übernommen werden */
+  const latestRunId = new Map<string, string>();
+  let timer = 0;
+
+  // --- Bausteine ------------------------------------------------------------------------
+
+  function statusBadge(status: SyncRun["status"] | null): HTMLElement {
+    return h("span", { class: "sy-status", "data-status": status ?? "none" }, status ? STATUS_TEXT[status] : "Noch nie synchronisiert");
+  }
+
+  function remoteList(title: string, items: PlanRemote[], note?: string): HTMLElement | null {
+    if (!items.length) return null;
+    return h(
+      "div",
+      { class: "sy-block" },
+      h("h4", {}, `${title} (${items.length})`),
+      note ? h("p", { class: "faint" }, note) : null,
+      h(
+        "ul",
+        { class: "plain sy-list" },
+        ...items.slice(0, 50).map((r) =>
+          h("li", {}, h("a", { href: r.url, target: "_blank", rel: "noopener noreferrer" }, r.title ?? r.external_id), r.artist ? h("span", { class: "muted" }, ` – ${r.artist}`) : null),
+        ),
+      ),
+    );
+  }
+
+  function planView(target: SyncTarget, run: SyncRun & { plan: SyncPlan }): HTMLElement {
+    const plan = run.plan;
+    const box = h("div", { class: "sy-plan" });
+    const heading = run.dry_run
+      ? `Vorschau vom ${formatDateTime(run.finished_at ?? run.created_at)}`
+      : `Lauf vom ${formatDateTime(run.started_at ?? run.created_at)} – ${STATUS_TEXT[run.status]}`;
+    box.append(h("h3", {}, heading), h("p", { class: "sy-summary" }, planSummary(plan)));
+    if (plan.quota_units) {
+      box.append(h("p", { class: "faint" }, `Benötigt etwa ${plan.quota_units.toLocaleString("de-DE")} Einheiten des YouTube-Tageskontingents (10 000).`));
+    }
+    if (plan.add.length) {
+      box.append(
+        h(
+          "div",
+          { class: "sy-block" },
+          h("h4", {}, `Hinzufügen (${plan.add.length})`),
+          h(
+            "ol",
+            { class: "sy-list" },
+            ...plan.add.slice(0, 100).map((a) =>
+              h(
+                "li",
+                {},
+                h("span", {}, a.title),
+                h("span", { class: "muted" }, ` – ${a.artist}`),
+                a.new_link ? h("span", { class: "sy-tag" }, "neu zugeordnet") : null,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    if (plan.remove.length) {
+      box.append(
+        h(
+          "div",
+          { class: "sy-block" },
+          h("h4", {}, `Entfernen auf der Plattform (${plan.remove.length})`),
+          h(
+            "ul",
+            { class: "plain sy-list" },
+            ...plan.remove.map((r) =>
+              h(
+                "li",
+                {},
+                h("a", { href: r.url, target: "_blank", rel: "noopener noreferrer" }, r.title ?? r.external_id),
+                r.external ? h("span", { class: "sy-tag sy-warn" }, "nicht von MusicHub") : null,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    if (plan.reorder) box.append(h("p", {}, "Die Reihenfolge auf der Plattform wird an MusicHub angepasst."));
+    const external = [
+      remoteList("Auf der Plattform hinzugekommen", plan.first_sync ? [] : plan.external_added, target.mode === "add_only" ? "Bleibt unverändert." : undefined),
+      remoteList("Auf der Plattform entfernt", plan.external_removed),
+      remoteList("Nicht erneut hinzugefügt", plan.not_readded, "Wurde auf der Plattform entfernt – MusicHub respektiert das."),
+    ].filter((x): x is HTMLElement => x !== null);
+    if (external.length) box.append(h("div", { class: "sy-external" }, h("h4", {}, "Externe Änderungen"), ...external));
+    if (plan.duplicates_skipped || plan.already_present) {
+      box.append(
+        h(
+          "p",
+          { class: "faint" },
+          [
+            plan.already_present ? `${plural(plan.already_present, "Track ist", "Tracks sind")} schon vorhanden` : null,
+            plan.duplicates_skipped ? `${plural(plan.duplicates_skipped, "doppelter Eintrag wird", "doppelte Einträge werden")} nur einmal übertragen` : null,
+          ]
+            .filter(Boolean)
+            .join(" · "),
+        ),
+      );
+    }
+    if (plan.unresolved.length) {
+      box.append(
+        h(
+          "div",
+          { class: "sy-block" },
+          h("h4", {}, `Nicht übertragbar (${plan.unresolved.length})`),
+          h(
+            "ul",
+            { class: "plain sy-list" },
+            ...plan.unresolved.map((u) =>
+              h(
+                "li",
+                {},
+                h("a", { href: `/track/?id=${encodeURIComponent(u.track_id)}` }, u.title),
+                h("span", { class: "muted" }, ` – ${u.artist}`),
+                h("span", { class: "sy-tag" }, REASON_TEXT[u.reason]),
+                ...u.alternatives.map((alt) => h("a", { class: "sy-alt", href: alt.url, target: "_blank", rel: "noopener noreferrer" }, platformLabel(alt.platform))),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    if (run.errors.length) box.append(...run.errors.map((e) => h("p", { class: "error-line" }, e)));
+
+    if (run.dry_run && run.status === "preview" && !plan.noop && run.id === latestRunId.get(target.id)) {
+      const ready = canSyncFromPreview(target, run);
+      let approve: HTMLInputElement | null = null;
+      if (plan.requires_approval) {
+        approve = h("input", { type: "checkbox" });
+        box.append(
+          h(
+            "label",
+            { class: "sy-check sy-approve" },
+            approve,
+            h("span", {}, "Ich stimme zu, dass Tracks, die nicht von MusicHub stammen, auf der Plattform entfernt bzw. extern entfernte Tracks wieder hinzugefügt werden."),
+          ),
+        );
+      }
+      const go = h("button", { type: "button" }, target.needs_confirmation ? "Vorschau bestätigen und synchronisieren" : "Änderungen übernehmen");
+      go.disabled = !ready || !!approve;
+      approve?.addEventListener("change", () => (go.disabled = !ready || !approve?.checked));
+      go.addEventListener("click", async () => {
+        go.disabled = true;
+        try {
+          await api.runSync(playlistId, target.id, { preview_run_id: run.id, approve_external_changes: !!approve?.checked });
+          toast("Synchronisierung gestartet.");
+          shown.delete(target.id);
+          await load();
+        } catch (e) {
+          toast(errorMessage(e), "error");
+          go.disabled = false;
+        }
+      });
+      box.append(
+        h(
+          "div",
+          { class: "actions" },
+          go,
+          !ready ? h("span", { class: "faint" }, target.write_ready ? "Vorschau veraltet – bitte neu erstellen." : "Schreiben ist noch nicht freigegeben (siehe oben).") : null,
+        ),
+      );
+    }
+    return box;
+  }
+
+  function settingsForm(target: SyncTarget): HTMLElement {
+    const enabled = h("input", { type: "checkbox", checked: target.enabled });
+    const schedule = h("select", {}, ...SCHEDULES.map((s) => h("option", { value: s.minutes ?? "", selected: s.minutes === target.schedule_minutes }, s.label)));
+    const mode = h(
+      "select",
+      {},
+      h("option", { value: "add_only", selected: target.mode === "add_only" }, MODE_TEXT.add_only),
+      h("option", { value: "mirror", selected: target.mode === "mirror", disabled: !(target.managed && target.mirror_allowed) }, MODE_TEXT.mirror),
+    );
+    const save = async (changes: Parameters<typeof api.updateSyncTarget>[2]) => {
+      try {
+        await api.updateSyncTarget(playlistId, target.id, changes);
+        toast("Gespeichert.");
+        await load();
+      } catch (e) {
+        toast(errorMessage(e), "error");
+        await load();
+      }
+    };
+    enabled.addEventListener("change", () => void save({ enabled: enabled.checked }));
+    schedule.addEventListener("change", () =>
+      void save(schedule.value ? { schedule_minutes: Number(schedule.value) } : { manual_only: true }),
+    );
+    mode.addEventListener("change", () => void save({ mode: mode.value as SyncMode }));
+    const row = h(
+      "div",
+      { class: "sy-settings" },
+      h("label", { class: "sy-check" }, enabled, h("span", {}, "Synchronisierung aktiviert")),
+      h("label", { class: "field" }, "Modus", mode),
+      h("label", { class: "field" }, "Zeitplan", schedule),
+    );
+    if (target.managed) {
+      const mirror = h("input", { type: "checkbox", checked: target.mirror_allowed });
+      mirror.addEventListener("change", async () => {
+        if (mirror.checked) {
+          const ok = await confirmDialog({
+            title: "Vollständig abgleichen freigeben?",
+            message: "MusicHub darf diese von MusicHub angelegte Playlist dann exakt an die lokale angleichen – auch entfernen und umsortieren. Fremde Tracks werden nur mit deiner ausdrücklichen Zustimmung entfernt.",
+            confirm: "Freigeben",
+          });
+          if (!ok) {
+            mirror.checked = false;
+            return;
+          }
+        }
+        void save({ mirror_allowed: mirror.checked });
+      });
+      row.append(h("label", { class: "sy-check" }, mirror, h("span", {}, "Vollständiges Abgleichen erlaubt")));
+    }
+    return row;
+  }
+
+  function targetCard(target: SyncTarget, runs: SyncRun[]): HTMLElement {
+    const label = platformLabel(target.platform);
+    const active = runs.find((r) => r.id === target.active_run_id);
+    const preview = h("button", { type: "button", class: "ghost" }, "Vorschau erstellen");
+    preview.disabled = !!target.active_run_id;
+    preview.addEventListener("click", async () => {
+      preview.disabled = true;
+      try {
+        await api.previewSync(playlistId, target.id);
+        await load();
+      } catch (e) {
+        toast(errorMessage(e), "error");
+        preview.disabled = false;
+      }
+    });
+    const syncNow = h("button", { type: "button" }, "Jetzt synchronisieren");
+    syncNow.disabled = !target.write_ready || target.needs_confirmation || !!target.active_run_id;
+    syncNow.title = target.needs_confirmation ? "Vor dem ersten Sync eine Vorschau erstellen und bestätigen" : "";
+    syncNow.addEventListener("click", async () => {
+      syncNow.disabled = true;
+      try {
+        await api.runSync(playlistId, target.id);
+        toast("Synchronisierung gestartet.");
+        await load();
+      } catch (e) {
+        toast(errorMessage(e), "error");
+        await load();
+      }
+    });
+    const remove = h("button", { type: "button", class: "quiet" }, "Ziel entfernen");
+    remove.addEventListener("click", async () => {
+      const ok = await confirmDialog({
+        title: "Ziel entfernen?",
+        message: `Die Einstellung wird gelöscht. Die Playlist auf ${label} bleibt unverändert bestehen, die Historie bleibt erhalten.`,
+        confirm: "Entfernen",
+        danger: true,
+      });
+      if (!ok) return;
+      try {
+        await api.deleteSyncTarget(playlistId, target.id);
+        await load();
+      } catch (e) {
+        toast(errorMessage(e), "error");
+      }
+    });
+
+    // Neuester Lauf des Ziels: eine Vorschau nur dann mit Aktion, wenn danach nichts lief
+    const latest = runs.find((r) => r.target_id === target.id && !isActive(r));
+    const detail = shown.get(target.id);
+    const planBox = h("div", { class: "sy-plan-slot" });
+    const showRun = detail ?? latest;
+    if (showRun) {
+      api
+        .syncRun(playlistId, showRun.id)
+        .then((full) => {
+          if (hasPlan(full)) planBox.replaceChildren(planView(target, full));
+        })
+        .catch(() => undefined);
+    }
+
+    return h(
+      "article",
+      { class: "panel sy-target", "data-platform": target.platform },
+      h(
+        "header",
+        {},
+        h(
+          "div",
+          {},
+          h("h3", {}, label, " → ", target.remote_url ? h("a", { href: target.remote_url, target: "_blank", rel: "noopener noreferrer" }, target.remote_name ?? "Playlist") : (target.remote_name ?? "neue Playlist")),
+          h(
+            "p",
+            { class: "muted sy-meta" },
+            [MODE_TEXT[target.mode], scheduleText(target.schedule_minutes), target.managed ? "von MusicHub verwaltet" : "vorhandene Playlist", target.remote_playlist_id ? null : "wird beim ersten Sync angelegt"].filter(Boolean).join(" · "),
+          ),
+        ),
+        statusBadge(target.last_status),
+      ),
+      h(
+        "p",
+        { class: "sy-meta" },
+        target.last_synced_at ? `Zuletzt synchronisiert ${formatDateTime(target.last_synced_at)}` : "Noch nie synchronisiert",
+        target.next_run_at && target.schedule_minutes ? ` · nächster geplanter Lauf ${formatDateTime(target.next_run_at)}` : "",
+      ),
+      target.last_error ? h("p", { class: "error-line" }, target.last_error) : null,
+      target.write_blockers.length
+        ? h(
+            "div",
+            { class: "sy-blockers" },
+            h("strong", {}, "Schreiben noch nicht möglich – Vorschau geht trotzdem:"),
+            h("ul", {}, ...target.write_blockers.map((b) => h("li", {}, b))),
+            h("a", { href: "/platforms/" }, "Zu den Plattformen"),
+          )
+        : target.needs_confirmation
+          ? h("p", { class: "sy-note" }, "Vor dem ersten schreibenden Sync: Vorschau erstellen und bestätigen.")
+          : null,
+      active
+        ? h("p", { class: "sy-running" }, h("span", { class: "sy-spinner", "aria-hidden": "true" }), active.dry_run ? "Vorschau wird erstellt …" : "Synchronisierung läuft …")
+        : null,
+      settingsForm(target),
+      h("div", { class: "actions" }, preview, syncNow, remove),
+      planBox,
+    );
+  }
+
+  // --- Ziel hinzufügen ------------------------------------------------------------------
+
+  let remoteCache = new Map<Platform, RemotePlaylist[]>();
+
+  async function setupAddForm(name: string): Promise<void> {
+    const platformSel = $<HTMLSelectElement>("#add-platform");
+    const targetSel = $<HTMLSelectElement>("#add-target");
+    const nameInput = $<HTMLInputElement>("#add-name");
+    const modeSel = $<HTMLSelectElement>("#add-mode");
+    const mirror = $<HTMLInputElement>("#add-mirror");
+    const usable = connections.filter((c) => c.sync_supported && c.account);
+    $("#add-schedule").replaceChildren(...SCHEDULES.map((s) => h("option", { value: s.minutes ?? "" }, s.label)));
+    nameInput.value = name;
+    if (!usable.length) {
+      $("#add-form").replaceChildren(
+        h("p", { class: "muted" }, "Verbinde zuerst Spotify oder YouTube auf der Seite „Plattformen“. SoundCloud kann (noch) kein Ziel sein."),
+        h("a", { class: "button ghost", href: "/platforms/" }, "Zu den Plattformen"),
+      );
+      return;
+    }
+    platformSel.replaceChildren(...usable.map((c) => h("option", { value: c.platform }, c.label)));
+
+    const update = async () => {
+      const platform = platformSel.value as Platform;
+      if (!remoteCache.has(platform)) remoteCache.set(platform, await api.remotePlaylists(platform).catch(() => []));
+      const taken = new Set(targets.filter((t) => t.platform === platform).map((t) => t.remote_playlist_id));
+      const remotes = (remoteCache.get(platform) ?? []).filter((r) => r.items_accessible && !r.removed && !taken.has(r.external_id));
+      const current = targetSel.value;
+      targetSel.replaceChildren(
+        h("option", { value: "__new" }, "Neue Playlist anlegen (von MusicHub verwaltet)"),
+        ...remotes.map((r) => h("option", { value: r.id }, `${r.name}${r.owned ? "" : ` (${r.owner_name ?? "geteilt"})`}`)),
+      );
+      if ([...targetSel.options].some((o) => o.value === current)) targetSel.value = current;
+      const isNew = targetSel.value === "__new";
+      $("#add-name-field").hidden = !isNew;
+      $("#add-mirror-field").hidden = !isNew;
+      if (!isNew) mirror.checked = false;
+      const mirrorOption = modeSel.querySelector<HTMLOptionElement>('option[value="mirror"]');
+      if (mirrorOption) mirrorOption.disabled = !(isNew && mirror.checked);
+      if (modeSel.value === "mirror" && mirrorOption?.disabled) modeSel.value = "add_only";
+      const conn = connections.find((c) => c.platform === platform);
+      const hints: string[] = [];
+      if (isNew) hints.push("Neue Playlists werden privat angelegt.");
+      else hints.push("Vorhandene Playlists werden nur ergänzt – nichts wird entfernt oder umsortiert.");
+      if (conn && !conn.write_granted) hints.push("Das Konto ist nur lesend verbunden: Vorschau geht, zum Schreiben auf „Plattformen“ mit Schreibzugriff verbinden.");
+      if (platform === "youtube") hints.push("Jeder Eintrag kostet 50 Einheiten des YouTube-Tageskontingents.");
+      $("#add-hint").textContent = hints.join(" ");
+    };
+    platformSel.onchange = () => void update();
+    targetSel.onchange = () => void update();
+    mirror.onchange = () => void update();
+    await update();
+
+    $<HTMLFormElement>("#add-form").onsubmit = async (event) => {
+      event.preventDefault();
+      const error = $("#add-error");
+      error.textContent = "";
+      const submit = $<HTMLButtonElement>("#add-submit");
+      submit.disabled = true;
+      const schedule = $<HTMLSelectElement>("#add-schedule").value;
+      const isNew = targetSel.value === "__new";
+      try {
+        await api.createSyncTarget(playlistId, {
+          platform: platformSel.value as Platform,
+          ...(isNew ? { create_new: true, remote_name: nameInput.value.trim() || name } : { remote_playlist_id: targetSel.value }),
+          mode: modeSel.value as SyncMode,
+          mirror_allowed: isNew && mirror.checked,
+          schedule_minutes: schedule ? Number(schedule) : null,
+        });
+        toast("Ziel hinzugefügt. Als Nächstes: Vorschau erstellen.");
+        remoteCache = new Map();
+        await load();
+      } catch (e) {
+        error.textContent = errorMessage(e);
+      } finally {
+        submit.disabled = false;
+      }
+    };
+  }
+
+  // --- Nicht übertragbar, Historie ------------------------------------------------------
+
+  async function renderUnresolved(): Promise<void> {
+    const box = $("#unresolved");
+    const platforms = [...new Set(targets.map((t) => t.platform))];
+    if (!platforms.length) {
+      box.replaceChildren(h("p", { class: "faint" }, "Erst ein Ziel hinzufügen."));
+      return;
+    }
+    const sections = await Promise.all(
+      platforms.map(async (platform) => {
+        const rows = await api.unresolvedTracks(playlistId, platform);
+        const recheckable = rows.filter((r) => r.reason !== "unavailable" && r.reason !== "unchecked");
+        const recheck = h("button", { type: "button", class: "ghost" }, "Erneut prüfen");
+        recheck.disabled = !recheckable.length;
+        recheck.addEventListener("click", async () => {
+          recheck.disabled = true;
+          try {
+            const { reset } = await api.recheckTracks(playlistId, platform, recheckable.map((r) => r.track_id));
+            toast(`${plural(reset, "Track wird", "Tracks werden")} bei der nächsten Vorschau erneut gesucht.`);
+            await load();
+          } catch (e) {
+            toast(errorMessage(e), "error");
+            recheck.disabled = false;
+          }
+        });
+        return h(
+          "div",
+          { class: "sy-unresolved" },
+          h("h3", {}, `${platformLabel(platform)}: ${rows.length ? plural(rows.length, "Track", "Tracks") : "alles übertragbar"}`),
+          rows.length
+            ? h(
+                "div",
+                { class: "table-wrap" },
+                h(
+                  "table",
+                  { class: "data" },
+                  h("thead", {}, h("tr", {}, h("th", { scope: "col" }, "Track"), h("th", { scope: "col" }, "Status"), h("th", { scope: "col", class: "hide-sm" }, "Andere Plattformen"))),
+                  h(
+                    "tbody",
+                    {},
+                    ...rows.map((r) =>
+                      h(
+                        "tr",
+                        {},
+                        h("td", { class: "t-title" }, h("a", { href: `/track/?id=${encodeURIComponent(r.track_id)}` }, r.title), h("span", { class: "sy-sub muted" }, r.artist)),
+                        h(
+                          "td",
+                          {},
+                          h("span", { class: "sy-reason", "data-reason": r.reason }, REASON_TEXT[r.reason]),
+                          r.candidate_url ? h("a", { class: "sy-sub", href: r.candidate_url, target: "_blank", rel: "noopener noreferrer" }, `Möglicher Treffer: ${r.message ?? "ansehen"}`) : null,
+                          r.checked_at ? h("span", { class: "sy-sub faint" }, `geprüft ${formatDateTime(r.checked_at)}`) : null,
+                        ),
+                        h(
+                          "td",
+                          { class: "hide-sm" },
+                          r.alternatives.length
+                            ? h("span", { class: "sy-alts" }, ...r.alternatives.map((a) => h("a", { href: a.url ?? "#", target: "_blank", rel: "noopener noreferrer" }, platformLabel(a.platform))))
+                            : h("span", { class: "faint" }, "–"),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              )
+            : null,
+          rows.length ? h("div", { class: "actions" }, recheck) : null,
+        );
+      }),
+    );
+    box.replaceChildren(...sections);
+  }
+
+  function renderHistory(runs: SyncRun[]): void {
+    const box = $("#history");
+    if (!runs.length) {
+      box.replaceChildren(h("p", { class: "faint" }, "Noch keine Läufe."));
+      return;
+    }
+    const trigger = { preview: "Vorschau", manual: "Manuell", scheduled: "Zeitplan" } as const;
+    box.replaceChildren(
+      h(
+        "div",
+        { class: "table-wrap" },
+        h(
+          "table",
+          { class: "data sy-history" },
+          h(
+            "thead",
+            {},
+            h("tr", {}, h("th", { scope: "col" }, "Start"), h("th", { scope: "col" }, "Ziel"), h("th", { scope: "col", class: "hide-sm" }, "Auslöser"), h("th", { scope: "col" }, "Status"), h("th", { scope: "col", class: "hide-sm" }, "Ergebnis"), h("th", { scope: "col" }, "")),
+          ),
+          h(
+            "tbody",
+            {},
+            ...runs.map((r) => {
+              const details = h("button", { type: "button", class: "quiet" }, "Details");
+              details.disabled = !r.target_id || !targets.some((t) => t.id === r.target_id);
+              details.addEventListener("click", () => {
+                if (!r.target_id) return;
+                shown.set(r.target_id, r);
+                void load();
+                document.querySelector(`article.sy-target`)?.scrollIntoView({ behavior: "smooth" });
+              });
+              return h(
+                "tr",
+                {},
+                h("td", { class: "nowrap" }, formatDateTime(r.started_at ?? r.created_at), r.finished_at ? h("span", { class: "sy-sub faint" }, `bis ${formatDateTime(r.finished_at)}`) : null),
+                h("td", {}, platformLabel(r.platform), h("span", { class: "sy-sub muted" }, r.remote_name ?? "neue Playlist")),
+                h("td", { class: "hide-sm" }, trigger[r.trigger]),
+                h("td", {}, statusBadge(r.status), ...r.errors.slice(0, 2).map((e) => h("span", { class: "sy-sub error-line" }, e))),
+                h("td", { class: "hide-sm muted" }, runSummary(r)),
+                h("td", { class: "right" }, details),
+              );
+            }),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // --- Laden ----------------------------------------------------------------------------
+
+  async function load(): Promise<void> {
+    window.clearTimeout(timer);
+    try {
+      const [playlist, list, history, conns] = await Promise.all([
+        api.getPlaylist(playlistId),
+        api.syncTargets(playlistId),
+        api.syncRuns(playlistId, { limit: 30 }),
+        api.connections(),
+      ]);
+      targets = list;
+      connections = conns;
+      latestRunId.clear();
+      for (const r of history.items) if (r.target_id && !latestRunId.has(r.target_id)) latestRunId.set(r.target_id, r.id);
+      $("#title").textContent = `Synchronisation: ${playlist.name}`;
+      const back = $<HTMLAnchorElement>("#back");
+      back.textContent = playlist.name;
+      back.href = `/playlist/?id=${encodeURIComponent(playlistId)}`;
+      document.title = `Synchronisation: ${playlist.name} – MusicHub`;
+      $("#targets").replaceChildren(
+        ...(targets.length
+          ? targets.map((t) => targetCard(t, history.items))
+          : [h("p", { class: "empty" }, "Noch kein Ziel. Füge unten Spotify oder YouTube als Ziel hinzu.")]),
+      );
+      renderHistory(history.items);
+      await Promise.all([renderUnresolved(), setupAddForm(playlist.name)]);
+      if (history.items.some(isActive)) timer = window.setTimeout(() => void load(), 2000);
+    } catch (e) {
+      $("#content").replaceChildren(h("div", { class: "notice" }, h("p", {}, errorMessage(e))));
+    }
+  }
+
+  if (requireLogin(tokens, $("#content"))) {
+    if (!playlistId) window.location.replace("/playlists/");
+    else void load();
+  }
+</script>
+
+<style is:global>
+  .sy-targets {
+    display: grid;
+    gap: 16px;
+  }
+  .sy-target {
+    display: grid;
+    gap: 12px;
+  }
+  .sy-target > header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .sy-target h3 {
+    margin: 0 0 4px;
+    font-size: 1.1rem;
+  }
+  .sy-target p {
+    margin: 0;
+  }
+  .sy-meta {
+    font-size: 0.88rem;
+  }
+  .sy-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85rem;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .sy-status::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    border: 1.5px solid var(--faint);
+  }
+  .sy-status[data-status="succeeded"]::before,
+  .sy-status[data-status="no_changes"]::before {
+    background: var(--ok);
+    border-color: var(--ok);
+  }
+  .sy-status[data-status="conflict"]::before,
+  .sy-status[data-status="partial"]::before,
+  .sy-status[data-status="blocked"]::before {
+    background: var(--warn);
+    border-color: var(--warn);
+  }
+  .sy-status[data-status="failed"]::before {
+    background: var(--danger);
+    border-color: var(--danger);
+  }
+  .sy-status[data-status="running"]::before,
+  .sy-status[data-status="queued"]::before {
+    border-color: var(--accent);
+  }
+  .sy-blockers {
+    padding: 12px 14px;
+    border: 1px dashed var(--warn);
+    border-radius: var(--r-sm);
+    font-size: 0.9rem;
+  }
+  .sy-blockers ul {
+    margin: 6px 0;
+    padding-left: 18px;
+    color: var(--muted);
+  }
+  .sy-note {
+    color: var(--warn);
+    font-size: 0.9rem;
+  }
+  .sy-running {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--muted);
+  }
+  .sy-spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--line-strong);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: sy-spin 0.9s linear infinite;
+  }
+  @keyframes sy-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .sy-spinner {
+      animation: none;
+    }
+  }
+  .sy-settings {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px 20px;
+    align-items: flex-end;
+    padding: 12px 0;
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+  }
+  .sy-settings .field {
+    min-width: 200px;
+  }
+  label.sy-check {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    font-size: 0.9rem;
+    cursor: pointer;
+  }
+  label.sy-check input {
+    width: 18px;
+    height: 18px;
+    flex: none;
+    margin: 1px 0 0;
+    accent-color: var(--accent);
+  }
+  .sy-plan {
+    display: grid;
+    gap: 10px;
+    padding: 14px 16px;
+    border-radius: var(--r-sm);
+    background: var(--raised);
+  }
+  .sy-plan h3 {
+    margin: 0;
+    font-size: 1rem;
+  }
+  .sy-plan h4 {
+    margin: 0 0 6px;
+    font-size: 0.9rem;
+    color: var(--muted);
+    font-weight: 600;
+  }
+  .sy-summary {
+    font-weight: 600;
+  }
+  .sy-list {
+    margin: 0;
+    padding-left: 20px;
+    display: grid;
+    gap: 3px;
+    font-size: 0.9rem;
+  }
+  ul.sy-list {
+    list-style: none;
+    padding: 0;
+  }
+  .sy-tag {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 0 7px;
+    border-radius: 999px;
+    border: 1px solid var(--line-strong);
+    color: var(--muted);
+    font-size: 0.76rem;
+  }
+  .sy-tag.sy-warn {
+    border-color: var(--warn);
+    color: var(--warn);
+  }
+  .sy-alt {
+    margin-left: 8px;
+    font-size: 0.82rem;
+  }
+  .sy-external {
+    padding-left: 12px;
+    border-left: 2px solid var(--warn);
+    display: grid;
+    gap: 8px;
+  }
+  .sy-approve {
+    padding: 10px 12px;
+    border: 1px solid var(--warn);
+    border-radius: var(--r-sm);
+  }
+  .sy-add .form-grid {
+    margin-bottom: 12px;
+  }
+  .sy-hint {
+    font-size: 0.88rem;
+    margin: 8px 0 0;
+  }
+  .sy-unresolved + .sy-unresolved {
+    margin-top: 20px;
+  }
+  .sy-unresolved h3 {
+    font-size: 1rem;
+  }
+  .sy-sub {
+    display: block;
+    font-size: 0.82rem;
+  }
+  .sy-reason[data-reason="api_error"],
+  .sy-reason[data-reason="candidate"] {
+    color: var(--warn);
+  }
+  .sy-reason[data-reason="unavailable"],
+  .sy-reason[data-reason="not_found"] {
+    color: var(--muted);
+  }
+  .sy-alts {
+    display: inline-flex;
+    gap: 10px;
+  }
+</style>

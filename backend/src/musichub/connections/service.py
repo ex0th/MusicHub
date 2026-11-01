@@ -114,9 +114,19 @@ def start_authorization(
     registry: ConnectorRegistry,
     platform: Platform,
     principal: Principal,
+    *,
+    write: bool = False,
 ) -> str:
-    """Legt einen einmaligen ``state`` an und liefert die Anmelde-URL der Plattform."""
+    """Legt einen einmaligen ``state`` an und liefert die Anmelde-URL der Plattform.
+
+    ``write`` fordert zusätzlich Schreibrechte für Playlists an – nur erlaubt, wenn die
+    Synchronisierung für diese Plattform freigeschaltet ist (MUSICHUB_SYNC_WRITE_PLATFORMS)."""
     connector = registry.get(platform)
+    if write and not (connector.write_scopes and settings.sync_write_enabled(platform.value)):
+        raise UnprocessableError(
+            f"Schreibzugriff für {PLATFORM_LABEL[platform]} ist nicht freigeschaltet "
+            "(MUSICHUB_SYNC_WRITE_PLATFORMS).",
+        )
     if Capability.OAUTH not in connector.capabilities:
         raise UnprocessableError(f"{PLATFORM_LABEL[platform]} unterstützt keine Anmeldung.")
     if problems := config_problems(settings, connector):
@@ -133,6 +143,7 @@ def start_authorization(
             state_hash=_hash(state),
             platform=platform.value,
             code_verifier_enc=cipher.encrypt(verifier),
+            access="write" if write else "read",
             created_by=principal.subject,
             created_at=now,
             expires_at=now + STATE_TTL,
@@ -143,7 +154,7 @@ def start_authorization(
     return registry.call(
         platform,
         lambda c: c.authorization_url(
-            state=state, code_challenge=code_challenge(verifier), redirect_uri=uri
+            state=state, code_challenge=code_challenge(verifier), redirect_uri=uri, write=write
         ),
     )
 
@@ -219,6 +230,11 @@ def complete_authorization(
     account.display_name = remote.display_name[:255]
     account.connected_by = pending.created_by
     _store_tokens(account, tokens, cipher)
+    if tokens.scope is None:
+        # Dienst meldet keine Scopes: angeforderte übernehmen
+        connector = registry.get(platform)
+        requested = connector.write_scopes if pending.access == "write" else connector.scopes
+        account.scopes = " ".join(requested) or None
     db.flush()
     enqueue_unique(db, JOB_REFRESH_PLAYLISTS, {"platform": platform.value})
     log.info("Konto verbunden", extra={"platform": platform.value})

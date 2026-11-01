@@ -138,6 +138,49 @@ class RemoteImportStatus(StrEnum):
     ERROR = "error"
 
 
+class SyncMode(StrEnum):
+    #: nur fehlende Tracks anhängen – nie entfernen oder umsortieren
+    ADD_ONLY = "add_only"
+    #: Zielplaylist vollständig an die lokale angleichen (nur von MusicHub verwaltete,
+    #: ausdrücklich freigegebene Ziele)
+    MIRROR = "mirror"
+
+
+class SyncTrigger(StrEnum):
+    PREVIEW = "preview"
+    MANUAL = "manual"
+    SCHEDULED = "scheduled"
+
+
+class SyncRunStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    #: Vorschau (Dry-Run) fertig – nichts auf der Plattform geändert
+    PREVIEW = "preview"
+    SUCCEEDED = "succeeded"
+    #: nichts zu tun
+    NO_CHANGES = "no_changes"
+    #: ein Teil ausgeführt (z. B. Kontingent erschöpft), nächster Lauf setzt fort
+    PARTIAL = "partial"
+    #: externe Änderungen brauchen Zustimmung – nichts geändert
+    CONFLICT = "conflict"
+    #: Sicherheitsregel verhindert den Lauf (Schreiben aus, keine Bestätigung …)
+    BLOCKED = "blocked"
+    FAILED = "failed"
+
+
+class LookupStatus(StrEnum):
+    """Ergebnis der Suche eines lokalen Tracks auf einer Plattform (ohne Verknüpfung)."""
+
+    #: sicher gefunden (ISRC oder exakte Daten) – wird beim Sync verknüpft
+    FOUND = "found"
+    #: nur ähnlicher Treffer – Vorschlag, wird nicht automatisch verwendet
+    CANDIDATE = "candidate"
+    NOT_FOUND = "not_found"
+    #: Suche fehlgeschlagen (API-Fehler, Kontingent) – wird erneut versucht
+    API_ERROR = "api_error"
+
+
 def sql_in(enum: type[StrEnum]) -> str:
     """Hilfsfunktion für CHECK-Constraints: "'a', 'b', 'c'"."""
     return ", ".join(f"'{m.value}'" for m in enum)

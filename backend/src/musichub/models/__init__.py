@@ -14,6 +14,7 @@ from musichub.models.library import (
     track_tags,
 )
 from musichub.models.matching import MatchCandidate, TrackMerge
+from musichub.models.sync import PlatformLookup, SyncRun
 
 __all__ = [
     "Base",
@@ -23,10 +24,12 @@ __all__ = [
     "Job",
     "MatchCandidate",
     "OAuthState",
+    "PlatformLookup",
     "Playlist",
     "PlaylistItem",
     "PlaylistTarget",
     "RemotePlaylist",
+    "SyncRun",
     "Tag",
     "Track",
     "TrackMerge",

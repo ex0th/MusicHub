@@ -1,8 +1,10 @@
 # Plattform-Connectoren
 
 MusicHub liest Playlists aus verbundenen Konten bei Spotify, YouTube und (mit eigenen
-Zugangsdaten) SoundCloud. **Diese Etappe ist ausschließlich lesend:** Es werden keine
-Playlists, Bibliotheken oder Likes auf den Plattformen angelegt oder verändert.
+Zugangsdaten) SoundCloud. **Import, Playlist-Liste und Metadaten sind ausschließlich
+lesend.** Geschrieben wird nur von der Synchronisierung ([SYNC.md](SYNC.md)) – nur
+Playlist-Inhalte, nie Bibliotheken oder Likes, und erst nach ausdrücklicher Freigabe
+(`MUSICHUB_SYNC_WRITE_PLATFORMS`, Schreib-Scopes beim Verbinden, bestätigte Vorschau).
 
 Verwendet werden nur die offiziellen, dokumentierten Schnittstellen. Inoffizielle APIs,
 fremde Client-IDs oder Scraping sind ausgeschlossen. Stand der Prüfung: 31.10.2026.
@@ -13,7 +15,9 @@ fremde Client-IDs oder Scraping sind ausgeschlossen. Stand der Prüfung: 31.10.2
 |---|---|---|---|
 | Schnittstelle | Spotify Web API | YouTube Data API v3 | SoundCloud API |
 | Anmeldung | OAuth 2.0 Authorization Code (Client-Secret) | Google OAuth 2.0 (Webanwendung) mit PKCE | OAuth 2.1 mit PKCE (Pflicht) |
-| Scopes | `playlist-read-private`, `playlist-read-collaborative` | `https://www.googleapis.com/auth/youtube.readonly` | keine feingranularen Scopes |
+| Scopes (lesen) | `playlist-read-private`, `playlist-read-collaborative` | `https://www.googleapis.com/auth/youtube.readonly` | keine feingranularen Scopes |
+| Scopes (Sync, nur auf Wunsch) | zusätzlich `playlist-modify-private`, `playlist-modify-public` | `https://www.googleapis.com/auth/youtube` | – (kein Sync-Ziel) |
+| Schreibende Endpunkte | `POST /me/playlists`, `POST`/`PUT /playlists/{id}/items` (je 100) | `playlists.insert`, `playlistItems.insert/update/delete` (je 50 Einheiten) | – |
 | Eigene Playlists | ✔ | ✔ (Playlists des Kanals) | ✔ |
 | Playlist-Inhalte | nur eigene/kollaborative (Development Mode) | ✔ | ✔ |
 | Metadaten verknüpfter Tracks | ✔ (einzeln, max. 100 je Lauf) | ✔ (50 je Aufruf, max. 500 je Lauf) | – |
@@ -178,9 +182,10 @@ Playlists auswählen → „importieren“
 - `state`: 256 Bit zufällig, nur als SHA-256 gespeichert, einmalig, 10 Minuten gültig, an
   die Plattform gebunden. Der Rückruf antwortet mit `Cache-Control: no-store` und
   `Referrer-Policy: no-referrer`.
-- Der HTTP-Client der Connectoren lässt gegenüber den Plattform-APIs **nur GET** zu und
-  sendet Tokens nur an den eigenen API-Host (fremde `next`-Links werden abgelehnt). POST
-  gibt es nur an Token-/Widerrufs-Endpunkte. Ein Test prüft das für alle drei Connectoren.
+- Lesende Abläufe nutzen nur `ApiClient.get`; ein Test prüft für alle drei Connectoren,
+  dass Import/Liste/Inhalte ausschließlich GET senden. Schreiben (`ApiClient.write`) ist der
+  Synchronisierung vorbehalten und wird nie automatisch wiederholt. Tokens gehen nur an den
+  eigenen API-Host (fremde `next`-Links werden abgelehnt).
 - Token-Erneuerung läuft in eigener Transaktion mit Zeilensperre (einmalige Refresh-Tokens
   gehen so nie durch einen Rollback verloren).
 - Trennen löscht die Tokens (YouTube: zusätzlich Widerruf bei Google). Importierte Tracks,

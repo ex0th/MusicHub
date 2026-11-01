@@ -15,7 +15,7 @@ PostgreSQL 17, Zugriff über SQLAlchemy 2 (synchron, psycopg 3), Migrationen mit
   (Links eines Tracks, Einträge einer Playlist). Ein Track in einer Playlist ist mit
   `RESTRICT` geschützt.
 
-## Schema (Revision `0005`)
+## Schema (Revision `0006`)
 
 ```
                 tags
@@ -36,6 +36,8 @@ match_candidates (track_a_id, track_b_id) ──(CASCADE)──> tracks
 track_merges (kept_track_id, removed_track_id – ohne Fremdschlüssel)
 connector_accounts (eine Zeile je Plattform)    oauth_states (laufende Anmeldungen)
 remote_playlists ──(SET NULL)──> playlists, import_runs
+sync_runs ──(SET NULL)──> playlist_targets, playlists
+platform_lookups ──(CASCADE)──> tracks
 ```
 
 ### `tracks` – die lokale Sammlung
@@ -105,9 +107,30 @@ entfernt ihn mit `force=true` zuerst aus allen Playlists und nummeriert neu.
 
 ### `playlist_targets` – Sync-Ziele
 
-Eine lokale Playlist hat pro Plattform höchstens ein Ziel (`uq (playlist_id, platform)`).
-`remote_playlist_id` ist `NULL`, bis die Plattform-Playlist angelegt wurde.
-`enabled`, `last_synced_at`, `last_error` für Steuerung und Anzeige. Noch ohne API.
+Eine Playlist kann mehrere Ziele haben (seit `0006` auch mehrere je Plattform); eine
+Plattform-Playlist ist höchstens Ziel einer lokalen Playlist (Teil-Unique-Index
+`uq_playlist_targets_remote` auf `(platform, remote_playlist_id)`). `remote_playlist_id`
+ist `NULL`, bis MusicHub die Playlist beim ersten Sync anlegt. Weitere Spalten:
+`remote_name`, `remote_url`, `enabled`, `mode` (`add_only` | `mirror`), `managed` (von
+MusicHub angelegt), `mirror_allowed`, `schedule_minutes` (≥ 60) und `next_run_at`,
+`confirmed_at`/`confirmed_by` (erste Vorschau bestätigt), `known_remote_items` (jsonb,
+Grundlage für externe Änderungen), `last_synced_at`, `last_status`, `last_run_id`,
+`last_error`, `created_by`. CHECK `mirror_only_managed`: `mode = 'mirror'` nur mit
+`managed AND mirror_allowed`. Details: [SYNC.md](SYNC.md).
+
+### `sync_runs` – Synchronisationshistorie
+
+Je Lauf (auch Vorschau): `target_id`/`playlist_id` (SET NULL, Namen werden
+mitgeschrieben), `platform`, `remote_playlist_id`, `remote_name`, `trigger`, `status`,
+`dry_run`, `mode`, `approved_external_removal`, `started_at`, `finished_at`, `added`,
+`removed`, `skipped`, `unmatched`, `plan` (jsonb, Vorschau), `errors` (jsonb),
+`preview_run_id`, `job_id`, `created_by`.
+
+### `platform_lookups` – Suche nicht verknüpfter Tracks
+
+Je `(track_id, platform)` (CASCADE): `status` (`found` | `candidate` | `not_found` |
+`api_error`), gefundene `external_id`, `confidence`, `message`, `checked_at`. Kein Eintrag =
+„noch nicht geprüft“.
 
 ### `jobs` – Hintergrundjobs
 
@@ -185,7 +208,7 @@ Werden erst angelegt, wenn die zugehörige Funktion gebaut wird (siehe ROADMAP):
 
 | Tabelle | Zweck | Wichtigste Spalten |
 |---|---|---|
-| `sync_runs` | Historie je Synchronisation einer Playlist | `playlist_target_id`, `job_id`, `started_at`, `finished_at`, `status`, `added`, `removed`, `unresolved`, `error` |
+| – | derzeit keine | – |
 
 ## Migrationen
 
@@ -207,7 +230,7 @@ Regeln:
   Die CI prüft mit `alembic check`, dass nichts fehlt.
 - Generierte Migrationen immer lesen und nachbessern (Datenmigrationen, Defaults für
   neue Pflichtspalten, CHECK-Constraints).
-- Revisionen fortlaufend benennen (`0005_…`): `alembic revision --autogenerate --rev-id 0005 -m "…"`.
+- Revisionen fortlaufend benennen (`0006_…`): `alembic revision --autogenerate --rev-id 0006 -m "…"`.
 - Migrationen müssen auf einer Datenbank mit Bestandsdaten funktionieren und eine
   sinnvolle `downgrade()` haben. Beispiel: `0002` überführt `platform_links` mit allen
   Daten nach `track_sources` und normalisiert bestehende Playlist-Positionen.

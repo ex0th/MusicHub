@@ -29,6 +29,7 @@ from musichub.connectors.base import (
     RemotePlaylistInfo,
     RemoteTrack,
     TrackPage,
+    TrackQuery,
 )
 from musichub.connectors.http import ApiClient, OAuthClient
 from musichub.connectors.oauth import tokens_from_payload
@@ -40,6 +41,7 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 API_URL = "https://www.googleapis.com/youtube/v3"
 SCOPE = "https://www.googleapis.com/auth/youtube.readonly"
+WRITE_SCOPE = "https://www.googleapis.com/auth/youtube"
 PAGE_SIZE = 50
 
 _DURATION = re.compile(r"^P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$")
@@ -88,9 +90,22 @@ def channel_artist(channel: str | None) -> str | None:
 class YouTubeConnector(PlatformConnector):
     platform = Platform.YOUTUBE
     capabilities = frozenset(
-        {Capability.OAUTH, Capability.READ_PLAYLISTS, Capability.REFRESH_METADATA}
+        {
+            Capability.OAUTH,
+            Capability.READ_PLAYLISTS,
+            Capability.REFRESH_METADATA,
+            Capability.SEARCH,
+            Capability.WRITE_PLAYLISTS,
+        }
     )
     scopes = (SCOPE,)
+    #: Schreiben von Playlists verlangt laut API ``youtube`` (oder ``youtube.force-ssl``)
+    write_scopes = (WRITE_SCOPE,)
+    write_cost_units = 50
+
+    def has_write_scope(self, granted: str | None) -> bool:
+        have = set((granted or "").split())
+        return bool(have & {WRITE_SCOPE, "https://www.googleapis.com/auth/youtube.force-ssl"})
 
     def __init__(self, settings: Settings, *, transport: httpx.BaseTransport | None = None) -> None:
         self._client_id = settings.youtube_client_id
@@ -117,13 +132,15 @@ class YouTubeConnector(PlatformConnector):
 
     # --- OAuth (Google, Webanwendung, mit PKCE) --------------------------------------------
 
-    def authorization_url(self, *, state: str, code_challenge: str, redirect_uri: str) -> str:
+    def authorization_url(
+        self, *, state: str, code_challenge: str, redirect_uri: str, write: bool = False
+    ) -> str:
         client_id, _ = self._credentials()
         query = {
             "client_id": client_id,
             "redirect_uri": redirect_uri,
             "response_type": "code",
-            "scope": SCOPE,
+            "scope": WRITE_SCOPE if write else SCOPE,
             "access_type": "offline",  # Refresh-Token für Hintergrundjobs
             "prompt": "consent",
             "include_granted_scopes": "false",
@@ -250,6 +267,92 @@ class YouTubeConnector(PlatformConnector):
                 result[vid] = self._map_video(vid, video) if video else None
         return result
 
+    def search(self, access_token: str, query: TrackQuery, limit: int = 5) -> list[RemoteTrack]:
+        # search.list hat ein eigenes Tageslimit (100 Aufrufe) – sparsam verwenden
+        data = self._api.get(
+            "search",
+            access_token,
+            {
+                "part": "snippet",
+                "type": "video",
+                "videoCategoryId": "10",  # Musik
+                "q": f"{query.artist} {query.title}",
+                "maxResults": max(1, min(limit, 10)),
+            },
+        )
+        ids = [
+            str((i.get("id") or {}).get("videoId"))
+            for i in data.get("items") or []
+            if (i.get("id") or {}).get("videoId")
+        ]
+        videos = self._videos(access_token, ids)
+        return [self._map_video(vid, videos[vid]) for vid in ids if vid in videos]
+
+    # --- Schreiben (nur Synchronisierung, je Aufruf 50 Einheiten) ------------------------
+
+    def create_remote_playlist(
+        self, access_token: str, name: str, description: str | None
+    ) -> RemotePlaylistInfo:
+        data = self._api.write(
+            "POST",
+            "playlists",
+            access_token,
+            params={"part": "snippet,status"},
+            json={
+                "snippet": {"title": name[:150], "description": (description or "")[:5000]},
+                "status": {"privacyStatus": "private"},
+            },
+        )
+        playlist_id = str(data["id"])
+        return RemotePlaylistInfo(
+            platform=self.platform,
+            external_id=playlist_id,
+            name=str((data.get("snippet") or {}).get("title") or name),
+            track_count=0,
+            url=f"https://www.youtube.com/playlist?list={playlist_id}",
+            owned=True,
+            items_accessible=True,
+            version=data.get("etag"),
+        )
+
+    def _item_body(self, playlist_id: str, video_id: str) -> dict[str, Any]:
+        return {
+            "playlistId": playlist_id,
+            "resourceId": {"kind": "youtube#video", "videoId": video_id},
+        }
+
+    def add_to_playlist(
+        self, access_token: str, playlist_id: str, external_ids: Sequence[str]
+    ) -> None:
+        for video_id in external_ids:
+            self._api.write(
+                "POST",
+                "playlistItems",
+                access_token,
+                params={"part": "snippet"},
+                json={"snippet": self._item_body(playlist_id, video_id)},
+            )
+
+    def remove_from_playlist(
+        self, access_token: str, playlist_id: str, item_ids: Sequence[str]
+    ) -> None:
+        for item_id in item_ids:
+            self._api.write("DELETE", "playlistItems", access_token, params={"id": item_id})
+
+    def move_in_playlist(
+        self, access_token: str, playlist_id: str, item_id: str, external_id: str, position: int
+    ) -> None:
+        self._api.write(
+            "PUT",
+            "playlistItems",
+            access_token,
+            params={"part": "snippet"},
+            json={
+                "id": item_id,
+                "snippet": {**self._item_body(playlist_id, external_id), "position": position},
+            },
+        )
+
     # --- Abbildung -------------------------------------------------------------------------
 
     def _videos(self, access_token: str, ids: Sequence[str]) -> dict[str, dict[str, Any]]:
@@ -292,6 +395,7 @@ class YouTubeConnector(PlatformConnector):
                 (),
                 available=False,
                 note="Video gelöscht oder privat",
+                item_id=entry.get("id"),
             )
         track = self._map_video(vid, video)
         artist = channel_artist(snippet.get("videoOwnerChannelTitle")) or (
@@ -306,4 +410,5 @@ class YouTubeConnector(PlatformConnector):
             url=track.url,
             available=track.available,
             note=track.note,
+            item_id=entry.get("id"),
         )

@@ -8,8 +8,9 @@ import Base from "../../layouts/Base.astro";
       <h1>Plattformen</h1>
       <p class="lede">
         Verbinde Spotify, YouTube und SoundCloud, um deine Playlists in die Bibliothek zu holen.
-        MusicHub liest dabei nur – auf den Plattformen wird nichts verändert. Ohne Konto
-        funktionieren Links in der Track-Ansicht und der Dateiimport wie gewohnt.
+        Importe lesen nur. Geschrieben wird ausschließlich bei der Synchronisierung einer
+        Playlist – erst nach Freigabe in der Konfiguration, mit Schreibzugriff und bestätigter
+        Vorschau. Ohne Konto funktionieren Links und der Dateiimport wie gewohnt.
       </p>
     </div>
   </div>
@@ -259,6 +260,23 @@ import Base from "../../layouts/Base.astro";
         }),
       );
     }
+    if (state === "connected" && c.write_enabled && !c.write_granted) {
+      actions.push(
+        action("Schreibzugriff erteilen", "ghost", async () => {
+          const ok = await confirmDialog({
+            title: `Schreibzugriff für ${c.label}?`,
+            message:
+              "Für die Synchronisierung darf MusicHub dann Playlists anlegen und deren Inhalte ändern – " +
+              "nur Playlists, keine Bibliothek oder Likes. Geschrieben wird nur bei Zielen, die du auf " +
+              "einer Playlist einrichtest, und erst nach bestätigter Vorschau.",
+            confirm: "Weiter zur Anmeldung",
+          });
+          if (!ok) return;
+          const { authorize_url } = await api.authorizeConnection(platform, "write");
+          window.location.assign(authorize_url);
+        }),
+      );
+    }
     if (state === "connected") {
       actions.push(
         action("Playlists aktualisieren", "ghost", async () => {
@@ -349,7 +367,14 @@ import Base from "../../layouts/Base.astro";
             "p",
             { class: "pf-account" },
             h("span", {}, "Konto: ", h("strong", {}, c.account.display_name)),
-            h("span", { class: "muted" }, ` · verbunden ${formatDateTime(c.account.connected_at)} · nur lesend`),
+            h(
+              "span",
+              { class: "muted" },
+              ` · verbunden ${formatDateTime(c.account.connected_at)} · ` +
+                (c.write_granted && c.write_enabled
+                  ? "Lesen und Playlists schreiben (Synchronisierung)"
+                  : "nur lesend"),
+            ),
           )
         : null,
       c.account?.last_error ? h("p", { class: "error-line" }, c.account.last_error) : null,

@@ -68,7 +68,10 @@ class SoundCloudConnector(PlatformConnector):
             raise self._unsupported("oauth")
         return self._client_id, self._client_secret
 
-    def authorization_url(self, *, state: str, code_challenge: str, redirect_uri: str) -> str:
+    def authorization_url(
+        self, *, state: str, code_challenge: str, redirect_uri: str, write: bool = False
+    ) -> str:
+        # Schreibende Synchronisierung für SoundCloud ist nicht freigegeben (siehe docs/SYNC.md)
         client_id, _ = self._credentials()
         query = {
             "client_id": client_id,

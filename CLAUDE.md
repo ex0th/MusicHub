@@ -41,14 +41,20 @@ Instanz**, Playlists werden von dort nach Spotify, SoundCloud und YouTube synchr
 15. **Automatisch nur `certain` ohne Blocker** (`MatchAssessment.auto_merge_allowed`).
     Neue Matching-Regeln zuerst als Testfall (`MUST_NOT_AUTO_MERGE`) und `ENGINE_VERSION`
     erhöhen; abgelehnte Paare (`match_candidates.status = rejected`) nie überschreiben.
-16. **Plattformen nur lesen** (bis Schreiben ausdrücklich freigegeben ist): keine Scopes
-    oder Endpunkte, die Playlists/Bibliotheken ändern. `connectors/http.py::ApiClient`
-    kennt nur GET; `test_connectors_never_write_to_platform_apis` nicht abschwächen.
-    Nur offizielle APIs – kein Scraping, keine fremden Client-IDs.
+16. **Auf Plattformen schreibt nur die Synchronisierung** (`sync/executor.py` über
+    `ApiClient.write`) – nur Playlist-Inhalte, nie Bibliotheken/Likes. Import, Listen und
+    Metadaten nur lesend (`test_connectors_never_write_to_platform_apis` nicht abschwächen).
+    Schreib-Scopes nur auf ausdrücklichen Wunsch (`access=write`). Schreibaufrufe nie
+    automatisch wiederholen. Nur offizielle APIs – kein Scraping, keine fremden Client-IDs.
 17. **Tokens nur verschlüsselt** (`connections/crypto.py`), nie in API-Antworten, Logs oder
     Fehlermeldungen. Token-Erneuerung nur über `connections/service.access_token`
     (eigene Transaktion mit Sperre). Netzwerkzugriffe auf Plattformen nur in Jobs
     (Ausnahme: Code-Tausch im OAuth-Rückruf).
+18. **Sync-Freigaben nicht umgehen** (`sync/service.write_blockers`): Plattform in
+    `MUSICHUB_SYNC_WRITE_PLATFORMS`, Schreib-Scopes, Ziel aktiviert, bestätigte erste
+    Vorschau. `mirror` nur für `managed` + `mirror_allowed`; externe Tracks nur mit
+    Zustimmung zu einer gesehenen Vorschau entfernen. Planung bleibt rein (`sync/engine.py`),
+    neue Regeln zuerst als Test in `test_sync_engine.py`.
 
 ## Struktur
 
@@ -63,30 +69,31 @@ backend/
                        platform_urls.py (Links erkennen/erzeugen, ohne Netzwerk)
     db/                Engine/Session, Basis-Modell, Migrations-Status, migrate (Advisory-Lock)
     models/            SQLAlchemy-Modelle (library.py, imports.py, matching.py, connections.py,
-                       job.py) – in models/__init__ exportieren
+                       sync.py, job.py) – in models/__init__ exportieren
     migrations/        Alembic (env.py, versions/0001_…, 0002_bibliothek, 0003_importprotokoll,
-                       0004_matching, 0005_plattform_konten)
+                       0004_matching, 0005_plattform_konten, 0006_synchronisation)
     api/               schemas.py (Pydantic), routes/ (health, system, tracks, playlists, tags,
-                       imports, exports, matching, connections [+ /api/oauth])
+                       imports, exports, matching, connections [+ /api/oauth], sync)
     library/           Fachlogik: tracks, sources, tags, playlists, stats, queries,
                        matching (Scan, Vorschläge), merge (Zusammenführen, Rückgängig)
     transfer/          Import/Export: decoding, records, formats/ (Adapter), matching,
                        service (Analyse, Commit, Bericht), export
-    connectors/        base.py (Schnittstelle, DTOs, Fehler), http.py (nur GET, Rate-Limits),
+    connectors/        base.py (Schnittstelle, DTOs, Fehler), http.py (get/write, Rate-Limits),
                        oauth.py, spotify.py, youtube.py, soundcloud.py, platforms.py, registry.py
     connections/       crypto.py (Token-Verschlüsselung), service.py (OAuth, Tokens, Status),
                        importer.py (Jobs platform.*)
     matching/          engine.py (parse/compare, Confidence, Stufen), blocking.py (rein)
-    sync/engine.py     plan_playlist_sync
+    sync/              engine.py (plan_sync, reorder_moves – rein), service.py (Ziele,
+                       Freigaben, Zeitplan, Historie), executor.py (Job sync.run)
     jobs/              queue.py, handlers.py (@handler), worker.py
   tests/               pytest; DB-Tests mit @pytest.mark.db; fake_platforms.py (Plattform-APIs
                        als httpx.MockTransport)
 frontend/
   src/lib/             api.ts (Client), types.ts, auth.ts, session.ts, ui.ts (h(), Toast,
                        Dialog, Abdeckungsstreifen), platforms.ts, forms.ts, matching.ts,
-                       connections.ts
+                       connections.ts, sync.ts
   src/pages/           index (Dashboard), library/, track/?id=, playlists/, playlist/?id=,
-                       matching/, platforms/, settings/, import/, import/run/?id=
+                       sync/?id=, matching/, platforms/, settings/, import/, import/run/?id=
   src/layouts/         Base.astro (Navigation)
   src/components/      TrackForm.astro
   src/styles/          global.css (Tokens, Komponenten-Styles)
@@ -96,7 +103,7 @@ compose.yaml           Betrieb/Arcane (GHCR-Images)
 compose.dev.yaml       Entwicklung (Build, Hot Reload)
 .github/workflows/ci.yml
 docs/                  ARCHITECTURE, DATABASE, API, ROADMAP, IMPORT_EXPORT, MATCHING,
-                       CONNECTORS
+                       CONNECTORS, SYNC
 examples/import/       Beispieldateien je Importformat (auch Testdaten)
 ```
 

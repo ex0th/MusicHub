@@ -76,3 +76,4 @@ def matching_scan(ctx: JobContext) -> None:
 
 # Job-Typen der Plattform-Konten registrieren (Import am Ende vermeidet Zirkelbezüge)
 from musichub.connections import importer as _platform_jobs  # noqa: E402, F401
+from musichub.sync import executor as _sync_jobs  # noqa: E402, F401

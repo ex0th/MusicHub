@@ -61,6 +61,8 @@ class OAuthState(UUIDPrimaryKey, Base):
     state_hash: Mapped[str] = mapped_column(String(64), unique=True)
     platform: Mapped[str] = mapped_column(String(32))
     code_verifier_enc: Mapped[str] = mapped_column(Text)
+    #: angeforderter Zugriff: read | write (Schreibrechte nur für die Synchronisierung)
+    access: Mapped[str] = mapped_column(String(8), default="read", server_default="read")
     created_by: Mapped[str] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

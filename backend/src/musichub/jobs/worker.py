@@ -11,6 +11,7 @@ import os
 import signal
 import socket
 import threading
+import time
 import uuid
 
 from musichub.connectors.base import ConnectorError
@@ -90,6 +91,21 @@ def _fail(
             )
 
 
+def schedule_due_syncs(connectors: ConnectorRegistry) -> int:
+    """Fällige geplante Synchronisierungen als Jobs einstellen (mehrere Worker: SKIP LOCKED)."""
+    from musichub.sync.service import enqueue_due
+
+    try:
+        with get_sessionmaker().begin() as session:
+            count = enqueue_due(session, get_settings(), connectors)
+    except Exception:
+        log.exception("Zeitplan für Synchronisierungen fehlgeschlagen")
+        return 0
+    if count:
+        log.info("%d geplante Synchronisierung(en) eingeplant", count)
+    return count
+
+
 def main() -> None:
     settings = get_settings()
     configure_logging(settings.log_level, settings.log_format)
@@ -112,7 +128,11 @@ def main() -> None:
         stop.wait(5)
 
     log.info("Worker %s gestartet (Job-Typen: %s)", worker_id, ", ".join(sorted(HANDLERS)))
+    last_schedule = 0.0
     while not stop.is_set():
+        if time.monotonic() - last_schedule >= settings.sync_scheduler_interval_seconds:
+            last_schedule = time.monotonic()
+            schedule_due_syncs(connectors)
         try:
             worked = run_once(worker_id, connectors)
         except Exception:

@@ -8,7 +8,7 @@ die führende Instanz**: Ein Track existiert auch dann, wenn er auf keiner oder 
 Plattform verfügbar ist. Fällt eine Plattform aus, laufen Sammlung und alle anderen
 Plattformen ungestört weiter.
 
-> **Stand: Etappe 4a – Bibliothek, Import/Export, Matching und lesende Plattform-Connectoren.** Tracks, Plattform-Quellen, Tags und Playlists lassen
+> **Stand: Etappe 5a – Bibliothek, Import/Export, Matching, Plattform-Konten und Synchronisierung nach Spotify/YouTube.** Tracks, Plattform-Quellen, Tags und Playlists lassen
 > sich vollständig in der Weboberfläche und per REST-API verwalten – ganz ohne Plattform-Konten.
 > Links zu Spotify, SoundCloud und YouTube werden beim Einfügen erkannt. Die automatische
 > Anbindung der Plattform-APIs folgt in den nächsten Etappen, siehe [docs/ROADMAP.md](docs/ROADMAP.md).
@@ -37,6 +37,10 @@ Plattformen ungestört weiter.
   braucht Artist Pro), eigene Playlists auswählen und im Hintergrund importieren –
   mit Fortschritt, Wiederholung bei Rate-Limits und inkrementeller Aktualisierung. Rein
   lesend, Tokens nur verschlüsselt ([Details](docs/CONNECTORS.md))
+- **Synchronisierung:** Playlists nach Spotify und YouTube übertragen – nur hinzufügen
+  oder (für von MusicHub angelegte Playlists) vollständig abgleichen, manuell oder geplant,
+  mit Vorschau/Dry-Run, Konflikterkennung, Liste nicht übertragbarer Tracks und Historie.
+  Schreiben erst nach ausdrücklicher Freigabe ([Details](docs/SYNC.md))
 - **Einstellungen:** Anmeldung, helles/dunkles Schema, Tag-Verwaltung
 
 ## Inhalt
@@ -58,7 +62,7 @@ Plattformen ungestört weiter.
 | Plattform-Connectoren | Spotify, YouTube, SoundCloud (lesend), Registry mit Fehlerisolation | `…/connectors` |
 | Plattform-Konten | OAuth, verschlüsselte Tokens, Import-Jobs | `…/connections` |
 | Matching-Engine | reine Funktionen (Versionserkennung, Confidence 0–100, Blocking) | `…/matching` |
-| Synchronisations-Engine | reine Sync-Planung lokal → Plattform | `…/sync` |
+| Synchronisation | reine Planung + Ziele, Vorschau, Ausführung als Job | `…/sync` |
 | Hintergrundjobs | Job-Queue in PostgreSQL, eigener Worker-Container | `…/jobs` |
 
 Im Betrieb laufen vier Container: `db`, `backend` (API), `worker` und `frontend`
@@ -205,6 +209,9 @@ Client-ID/-Secret der jeweiligen App. Redirect-URI in der App der Plattform:
 `http://127.0.0.1:<port>`. Voraussetzungen (Spotify Premium für den App-Besitzer, YouTube-
 Kontingent, SoundCloud Artist Pro) und Schritt-für-Schritt-Anleitung:
 [docs/CONNECTORS.md](docs/CONNECTORS.md). Ohne diese Werte bleibt alles andere nutzbar.
+Schreiben auf Plattformen (Synchronisierung) zusätzlich mit
+`MUSICHUB_SYNC_WRITE_PLATFORMS=spotify,youtube` freischalten und das Konto auf *Plattformen*
+mit Schreibzugriff verbinden – siehe [docs/SYNC.md](docs/SYNC.md).
 
 ## Weitere Dokumentation
 
@@ -213,6 +220,7 @@ Kontingent, SoundCloud Artist Pro) und Schritt-für-Schritt-Anleitung:
 - [docs/API.md](docs/API.md) – Endpunkte, Auth, Fehlerformat
 - [docs/IMPORT_EXPORT.md](docs/IMPORT_EXPORT.md) – Importformate, Spalten, Ablauf, Export
 - [docs/CONNECTORS.md](docs/CONNECTORS.md) – Plattform-APIs, Einrichtung, Scopes, Kontingente
+- [docs/SYNC.md](docs/SYNC.md) – Synchronisierung: Freigaben, Modi, Konflikte, Historie
 - [docs/MATCHING.md](docs/MATCHING.md) – Erkennung gleicher Tracks, Score, Regeln, Zusammenführen
 - [docs/ROADMAP.md](docs/ROADMAP.md) – Etappen und offene Punkte
 - [CLAUDE.md](CLAUDE.md) – Projektkontext und Regeln für Claude Code

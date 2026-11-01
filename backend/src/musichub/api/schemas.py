@@ -36,6 +36,9 @@ from musichub.domain.types import (
     Platform,
     PlaylistImportMode,
     RemoteImportStatus,
+    SyncMode,
+    SyncRunStatus,
+    SyncTrigger,
 )
 
 NonEmpty = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
@@ -627,8 +630,14 @@ class ConnectionOut(ApiModel):
     missing: list[str]
     connector_state: str
     capabilities: list[str]
-    #: diese Etappe verändert nichts auf der Plattform
+    #: True = MusicHub verändert auf dieser Plattform nichts (Schreiben nicht freigeschaltet)
     read_only: bool = True
+    #: Plattform kann Ziel einer Synchronisierung sein (Connector unterstützt Schreiben)
+    sync_supported: bool = False
+    #: Schreiben per MUSICHUB_SYNC_WRITE_PLATFORMS freigeschaltet
+    write_enabled: bool = False
+    #: Konto wurde mit Schreibrechten verbunden
+    write_granted: bool = False
     redirect_uri: str | None
     account: ConnectionAccountOut | None
     playlists: int
@@ -701,6 +710,119 @@ class JobOut(ApiModel):
     run_after: datetime
     created_at: datetime
     finished_at: datetime | None
+
+
+# --- Synchronisierung --------------------------------------------------------------
+
+ScheduleMinutes = Annotated[int, Field(ge=60, le=60 * 24 * 30)]
+
+
+class SyncTargetCreate(InputModel):
+    platform: Platform
+    #: vorhandene Plattform-Playlist (ID aus GET /connections/{platform}/playlists) …
+    remote_playlist_id: uuid.UUID | None = None
+    #: … oder neue, von MusicHub verwaltete Playlist anlegen
+    create_new: bool = False
+    remote_name: Annotated[str, StringConstraints(strip_whitespace=True, max_length=150)] | None = (
+        None
+    )
+    mode: SyncMode = SyncMode.ADD_ONLY
+    #: Freigabe für „vollständig abgleichen“ (nur neue, von MusicHub verwaltete Playlists)
+    mirror_allowed: bool = False
+    schedule_minutes: ScheduleMinutes | None = None
+    enabled: bool = True
+
+    @model_validator(mode="after")
+    def _target(self) -> SyncTargetCreate:
+        if self.create_new == (self.remote_playlist_id is not None):
+            raise ValueError("Entweder remote_playlist_id oder create_new angeben.")
+        return self
+
+
+class SyncTargetUpdate(InputModel):
+    enabled: bool | None = None
+    mode: SyncMode | None = None
+    mirror_allowed: bool | None = None
+    schedule_minutes: ScheduleMinutes | None = None
+    #: true = Zeitplan entfernen (nur manuell)
+    manual_only: bool = False
+
+
+class SyncTargetOut(ApiModel):
+    id: uuid.UUID
+    playlist_id: uuid.UUID
+    platform: Platform
+    remote_playlist_id: str | None
+    remote_name: str | None
+    remote_url: str | None
+    enabled: bool
+    mode: SyncMode
+    managed: bool
+    mirror_allowed: bool
+    schedule_minutes: int | None
+    next_run_at: datetime | None
+    confirmed_at: datetime | None
+    last_synced_at: datetime | None
+    last_status: SyncRunStatus | None
+    last_run_id: uuid.UUID | None
+    last_error: str | None
+    #: Schreiben für die Plattform freigeschaltet und Konto mit Schreibrechten verbunden
+    write_ready: bool
+    #: warum nicht geschrieben werden kann (leer = bereit)
+    write_blockers: list[str]
+    #: eine Vorschau muss vor dem ersten schreibenden Sync bestätigt werden
+    needs_confirmation: bool
+    active_run_id: uuid.UUID | None
+
+
+class SyncRunOut(ApiModel):
+    id: uuid.UUID
+    target_id: uuid.UUID | None
+    playlist_id: uuid.UUID | None
+    playlist_name: str
+    platform: Platform
+    remote_playlist_id: str | None
+    remote_name: str | None
+    trigger: SyncTrigger
+    status: SyncRunStatus
+    dry_run: bool
+    mode: SyncMode
+    approved_external_removal: bool
+    started_at: datetime | None
+    finished_at: datetime | None
+    created_at: datetime
+    added: int
+    removed: int
+    skipped: int
+    unmatched: int
+    errors: list[str]
+    created_by: str
+    plan: dict[str, Any] | None = None
+
+
+class SyncRequest(InputModel):
+    #: Vorschau, die der Nutzer gesehen hat (Pflicht beim ersten schreibenden Sync und für
+    #: die Zustimmung zum Entfernen externer Tracks)
+    preview_run_id: uuid.UUID | None = None
+    #: ausdrückliche Zustimmung: externe Tracks dürfen entfernt/überschrieben werden
+    approve_external_changes: bool = False
+
+
+class UnresolvedTrackOut(ApiModel):
+    track_id: uuid.UUID
+    title: str
+    artist: str
+    version: str | None
+    reason: str
+    candidate_url: str | None
+    checked_at: datetime | None
+    message: str | None
+    #: bekannte Links auf anderen Plattformen
+    alternatives: list[SourceOut]
+
+
+class RecheckRequest(InputModel):
+    track_ids: Annotated[list[uuid.UUID], Field(min_length=1, max_length=MAX_BATCH)]
 
 
 # --- Connectoren ---------------------------------------------------------------

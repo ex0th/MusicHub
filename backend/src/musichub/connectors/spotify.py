@@ -4,7 +4,9 @@ Stand der API (Februar-2026-Änderungen, siehe docs/CONNECTORS.md):
 * Playlist-Inhalte: ``GET /playlists/{id}/items``; Feld ``item`` (``track`` veraltet).
 * Development Mode: App-Besitzer braucht Premium, höchstens 5 Nutzer, Inhalte nur für
   eigene oder kollaborative Playlists (sonst 403), keine Sammelabfrage ``GET /tracks``.
-* Scopes: ``playlist-read-private`` und ``playlist-read-collaborative`` – nichts Schreibendes.
+* Scopes lesend: ``playlist-read-private``, ``playlist-read-collaborative``. Für die
+  Synchronisierung zusätzlich – nur auf ausdrücklichen Wunsch – ``playlist-modify-private``
+  und ``playlist-modify-public`` (nur Playlist-Inhalte, keine Bibliothek).
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from musichub.connectors.base import (
     RemotePlaylistInfo,
     RemoteTrack,
     TrackPage,
+    TrackQuery,
 )
 from musichub.connectors.http import ApiClient, OAuthClient
 from musichub.connectors.oauth import tokens_from_payload
@@ -34,14 +37,25 @@ AUTHORIZE_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 API_URL = "https://api.spotify.com/v1"
 PAGE_SIZE = 50
+#: höchstens 100 Einträge je schreibendem Aufruf
+WRITE_CHUNK = 100
 
 
 class SpotifyConnector(PlatformConnector):
     platform = Platform.SPOTIFY
     capabilities = frozenset(
-        {Capability.OAUTH, Capability.READ_PLAYLISTS, Capability.REFRESH_METADATA}
+        {
+            Capability.OAUTH,
+            Capability.READ_PLAYLISTS,
+            Capability.REFRESH_METADATA,
+            Capability.SEARCH,
+            Capability.WRITE_PLAYLISTS,
+        }
     )
     scopes = ("playlist-read-private", "playlist-read-collaborative")
+    #: nur Playlist-Inhalte – keine Bibliothek, keine Follows
+    write_scopes = (*scopes, "playlist-modify-private", "playlist-modify-public")
+    can_replace = True
 
     def __init__(self, settings: Settings, *, transport: httpx.BaseTransport | None = None) -> None:
         self._client_id = settings.spotify_client_id
@@ -64,13 +78,15 @@ class SpotifyConnector(PlatformConnector):
 
     # --- OAuth (Authorization Code Flow mit Client-Secret, serverseitig) -----------------
 
-    def authorization_url(self, *, state: str, code_challenge: str, redirect_uri: str) -> str:
+    def authorization_url(
+        self, *, state: str, code_challenge: str, redirect_uri: str, write: bool = False
+    ) -> str:
         self._basic()
         query = {
             "client_id": self._client_id,
             "response_type": "code",
             "redirect_uri": redirect_uri,
-            "scope": " ".join(self.scopes),
+            "scope": " ".join(self.write_scopes if write else self.scopes),
             "state": state,
         }
         # Dokumentierter Authorization Code Flow für Server mit Client-Secret: ohne PKCE.
@@ -173,6 +189,68 @@ class SpotifyConnector(PlatformConnector):
                 raise
             result[track_id] = self._map_track(data)
         return result
+
+    def search(self, access_token: str, query: TrackQuery, limit: int = 5) -> list[RemoteTrack]:
+        # Seit Februar 2026 höchstens 10 Treffer je Suchanfrage
+        limit = max(1, min(limit, 10))
+        if query.isrc:
+            q = f"isrc:{query.isrc}"
+        else:
+            title = query.title.replace('"', " ")
+            artist = query.artist.replace('"', " ")
+            q = f'track:"{title}" artist:"{artist}"'
+        data = self._api.get("search", access_token, {"q": q, "type": "track", "limit": limit})
+        items = (data.get("tracks") or {}).get("items") or []
+        return [self._map_track(i) for i in items if isinstance(i, dict) and i.get("id")]
+
+    # --- Schreiben (nur Synchronisierung) -------------------------------------------------
+
+    @staticmethod
+    def _uri(track_id: str) -> str:
+        return f"spotify:track:{track_id}"
+
+    def create_remote_playlist(
+        self, access_token: str, name: str, description: str | None
+    ) -> RemotePlaylistInfo:
+        body: dict[str, Any] = {"name": name[:100], "public": False}
+        if description:
+            body["description"] = description[:300]
+        data = self._api.write("POST", "me/playlists", access_token, json=body)
+        return RemotePlaylistInfo(
+            platform=self.platform,
+            external_id=str(data["id"]),
+            name=str(data.get("name") or name),
+            track_count=0,
+            url=(data.get("external_urls") or {}).get("spotify"),
+            owned=True,
+            items_accessible=True,
+            version=data.get("snapshot_id"),
+        )
+
+    def add_to_playlist(
+        self, access_token: str, playlist_id: str, external_ids: Sequence[str]
+    ) -> None:
+        for start in range(0, len(external_ids), WRITE_CHUNK):
+            chunk = external_ids[start : start + WRITE_CHUNK]
+            self._api.write(
+                "POST",
+                f"playlists/{playlist_id}/items",
+                access_token,
+                json={"uris": [self._uri(i) for i in chunk]},
+            )
+
+    def replace_playlist(
+        self, access_token: str, playlist_id: str, external_ids: Sequence[str]
+    ) -> None:
+        first, rest = external_ids[:WRITE_CHUNK], external_ids[WRITE_CHUNK:]
+        self._api.write(
+            "PUT",
+            f"playlists/{playlist_id}/items",
+            access_token,
+            json={"uris": [self._uri(i) for i in first]},
+        )
+        if rest:
+            self.add_to_playlist(access_token, playlist_id, rest)
 
     # --- Abbildung -------------------------------------------------------------------------
 

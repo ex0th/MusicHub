@@ -16,6 +16,7 @@ from musichub.api.routes import (
     imports,
     matching,
     playlists,
+    sync,
     system,
     tags,
     tracks,
@@ -82,6 +83,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(matching.router)
     app.include_router(connections.router)
     app.include_router(connections.oauth_router)
+    app.include_router(sync.router)
 
     if settings.app_env is AppEnv.PRODUCTION and settings.cors_origins == ["*"]:
         log.warning("CORS erlaubt alle Origins in production – bitte einschränken.")

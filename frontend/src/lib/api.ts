@@ -30,6 +30,11 @@ import type {
   Problem,
   ReadyResponse,
   RemotePlaylist,
+  SyncMode,
+  SyncRun,
+  SyncTarget,
+  SyncTargetInput,
+  UnresolvedTrack,
   SourceInput,
   Tag,
   TagWithCount,
@@ -334,8 +339,8 @@ export class ApiClient {
     return this.request("/api/v1/connections");
   }
 
-  authorizeConnection(platform: Platform): Promise<{ authorize_url: string }> {
-    return this.request(`/api/v1/connections/${platform}/authorize`, { method: "POST" });
+  authorizeConnection(platform: Platform, access: "read" | "write" = "read"): Promise<{ authorize_url: string }> {
+    return this.request(`/api/v1/connections/${platform}/authorize?access=${access}`, { method: "POST" });
   }
 
   disconnect(platform: Platform): Promise<{ revoked: boolean }> {
@@ -368,6 +373,74 @@ export class ApiClient {
     const query = new URLSearchParams({ limit: String(limit) });
     if (platform) query.set("platform", platform);
     return this.request(`/api/v1/jobs?${query.toString()}`);
+  }
+
+  // --- Synchronisierung --------------------------------------------------------
+
+  syncTargets(playlistId: string): Promise<SyncTarget[]> {
+    return this.request(`/api/v1/playlists/${enc(playlistId)}/sync/targets`);
+  }
+
+  createSyncTarget(playlistId: string, input: SyncTargetInput): Promise<SyncTarget> {
+    return this.request(`/api/v1/playlists/${enc(playlistId)}/sync/targets`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  updateSyncTarget(
+    playlistId: string,
+    targetId: string,
+    changes: { enabled?: boolean; mode?: SyncMode; mirror_allowed?: boolean; schedule_minutes?: number; manual_only?: boolean },
+  ): Promise<SyncTarget> {
+    return this.request(`/api/v1/playlists/${enc(playlistId)}/sync/targets/${enc(targetId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(changes),
+    });
+  }
+
+  deleteSyncTarget(playlistId: string, targetId: string): Promise<void> {
+    return this.request(`/api/v1/playlists/${enc(playlistId)}/sync/targets/${enc(targetId)}`, {
+      method: "DELETE",
+    });
+  }
+
+  previewSync(playlistId: string, targetId: string): Promise<SyncRun> {
+    return this.request(`/api/v1/playlists/${enc(playlistId)}/sync/targets/${enc(targetId)}/preview`, {
+      method: "POST",
+    });
+  }
+
+  runSync(
+    playlistId: string,
+    targetId: string,
+    body: { preview_run_id?: string; approve_external_changes?: boolean } = {},
+  ): Promise<SyncRun> {
+    return this.request(`/api/v1/playlists/${enc(playlistId)}/sync/targets/${enc(targetId)}/sync`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  syncRuns(playlistId: string, params: { targetId?: string; limit?: number; offset?: number } = {}): Promise<Page<SyncRun>> {
+    const query = new URLSearchParams({ limit: String(params.limit ?? 20), offset: String(params.offset ?? 0) });
+    if (params.targetId) query.set("target_id", params.targetId);
+    return this.request(`/api/v1/playlists/${enc(playlistId)}/sync/runs?${query.toString()}`);
+  }
+
+  syncRun(playlistId: string, runId: string): Promise<SyncRun> {
+    return this.request(`/api/v1/playlists/${enc(playlistId)}/sync/runs/${enc(runId)}`);
+  }
+
+  unresolvedTracks(playlistId: string, platform: Platform): Promise<UnresolvedTrack[]> {
+    return this.request(`/api/v1/playlists/${enc(playlistId)}/sync/unresolved?platform=${platform}`);
+  }
+
+  recheckTracks(playlistId: string, platform: Platform, trackIds: string[]): Promise<{ reset: number }> {
+    return this.request(`/api/v1/playlists/${enc(playlistId)}/sync/recheck?platform=${platform}`, {
+      method: "POST",
+      body: JSON.stringify({ track_ids: trackIds }),
+    });
   }
 
   // --- Matching --------------------------------------------------------------

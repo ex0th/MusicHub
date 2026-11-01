@@ -1,7 +1,8 @@
 """Gemeinsamer HTTP-Client der Connectoren.
 
-* **Nur lesend:** Gegenüber den Plattform-APIs ist ausschließlich ``GET`` möglich. POST gibt
-  es nur für die OAuth-Token-Endpunkte (``post_form``), die als eigene Hosts registriert sind.
+* ``get`` liest (mit Wiederholungen), ``write`` (POST/PUT/DELETE) ist ausschließlich für
+  die Synchronisierung bestimmt und wiederholt nie unkontrolliert. Lesende Abläufe (Import,
+  Playlist-Liste, Metadaten) rufen nur ``get`` auf – ein Test prüft das.
 * Ein Token wird nur an den eigenen API-Host gesendet (``next``-Links anderer Hosts werden
   abgelehnt).
 * Rate-Limits (429): kurze ``Retry-After``-Werte werden direkt abgewartet, längere als
@@ -99,50 +100,104 @@ class ApiClient:
             return path_or_url
         return f"{self.base_url}/{path_or_url.lstrip('/')}"
 
+    def _headers(self, token: str) -> dict[str, str]:
+        return {"Authorization": f"{self._auth_scheme} {token}"}
+
+    def _check(self, response: httpx.Response) -> float | None:
+        """Wirft passende Fehler für 4xx; gibt bei 429 die Wartezeit zurück, sonst None."""
+        status = response.status_code
+        if status == 429:
+            return _retry_after(response)
+        if status == 401:
+            raise ConnectorAuthError(self.platform)
+        if status == 403 and self._quota_check and (wait := self._quota_check(response)):
+            raise RateLimitedError(
+                self.platform,
+                wait,
+                "Kontingent der API erschöpft – der Vorgang wird nach dem Zurücksetzen "
+                "fortgesetzt.",
+            )
+        if status in (400, 403, 404, 409):
+            raise ConnectorAccessError(self.platform, error_message(response), status=status)
+        return None
+
     def get(
         self, path_or_url: str, token: str, params: Mapping[str, Any] | None = None
     ) -> dict[str, Any]:
         url = self._url(path_or_url)
-        headers = {"Authorization": f"{self._auth_scheme} {token}"}
         last_error = "unbekannter Fehler"
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
-                response = self._client.get(url, params=params, headers=headers)
+                response = self._client.get(url, params=params, headers=self._headers(token))
             except httpx.TimeoutException:
                 last_error = "Zeitüberschreitung"
             except httpx.TransportError as exc:
                 last_error = f"Verbindungsfehler ({type(exc).__name__})"
             else:
-                status = response.status_code
-                if status < 300:
+                if response.status_code < 300:
                     data = response.json()
                     if not isinstance(data, dict):
                         raise ConnectorError(self.platform, "Unerwartetes Antwortformat.")
                     return data
-                if status == 429:
-                    wait = _retry_after(response)
+                wait = self._check(response)
+                if wait is not None:
                     if wait <= INLINE_RETRY_AFTER and attempt < MAX_ATTEMPTS:
                         log.info("%s: Rate-Limit, warte %.0f s", self.platform.value, wait)
                         self._sleep(wait)
                         continue
                     raise RateLimitedError(self.platform, wait)
-                if status == 401:
-                    raise ConnectorAuthError(self.platform)
-                if status == 403 and self._quota_check and (wait := self._quota_check(response)):
-                    raise RateLimitedError(
-                        self.platform,
-                        wait,
-                        "Tageskontingent der API erschöpft – Import wird nach dem Zurücksetzen "
-                        "fortgesetzt.",
-                    )
-                if status in (400, 403, 404):
-                    raise ConnectorAccessError(
-                        self.platform, error_message(response), status=status
-                    )
                 last_error = error_message(response)  # 5xx: kurz warten und erneut versuchen
             if attempt < MAX_ATTEMPTS:
                 self._sleep(attempt)
         raise ConnectorError(self.platform, f"Plattform nicht erreichbar: {last_error}")
+
+    def write(
+        self,
+        method: str,
+        path: str,
+        token: str,
+        *,
+        json: Any = None,
+        params: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Schreibender Aufruf – ausschließlich für die Synchronisierung (sync/executor.py).
+
+        Keine automatische Wiederholung bei Zeitüberschreitung oder Serverfehler: Ob die
+        Änderung angekommen ist, ist dann unbekannt. Der Fehler geht an den Sync, der den
+        Lauf beendet; der nächste Lauf liest den tatsächlichen Stand und plant neu.
+        Nur 429 (Anfrage wurde nicht ausgeführt) wird bei kurzer Wartezeit wiederholt."""
+        if method not in {"POST", "PUT", "DELETE"}:
+            raise ValueError(f"Unzulässige Methode {method}")
+        url = self._url(path)
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            try:
+                response = self._client.request(
+                    method, url, json=json, params=params, headers=self._headers(token)
+                )
+            except httpx.HTTPError as exc:
+                raise ConnectorError(
+                    self.platform,
+                    f"Schreibzugriff ohne Antwort ({type(exc).__name__}) – Ergebnis unbekannt, "
+                    "der nächste Lauf prüft den tatsächlichen Stand.",
+                    retryable=False,
+                ) from None
+            if response.status_code < 300:
+                if not response.content:
+                    return {}
+                data = response.json()
+                return data if isinstance(data, dict) else {}
+            wait = self._check(response)
+            if wait is not None:
+                if wait <= INLINE_RETRY_AFTER and attempt < MAX_ATTEMPTS:
+                    self._sleep(wait)
+                    continue
+                raise RateLimitedError(self.platform, wait)
+            raise ConnectorError(
+                self.platform,
+                f"Schreibzugriff fehlgeschlagen: {error_message(response)}",
+                retryable=False,
+            )
+        raise RateLimitedError(self.platform, INLINE_RETRY_AFTER)
 
     def close(self) -> None:
         self._client.close()

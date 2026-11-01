@@ -409,6 +409,9 @@ export interface Connection {
   connector_state: string;
   capabilities: string[];
   read_only: boolean;
+  sync_supported: boolean;
+  write_enabled: boolean;
+  write_granted: boolean;
   redirect_uri: string | null;
   account: ConnectionAccount | null;
   playlists: number;
@@ -454,4 +457,134 @@ export interface Job {
   run_after: string;
   created_at: string;
   finished_at: string | null;
+}
+
+// --- Synchronisierung --------------------------------------------------------------
+
+export type SyncMode = "add_only" | "mirror";
+export type SyncTrigger = "preview" | "manual" | "scheduled";
+export type SyncRunStatus =
+  | "queued"
+  | "running"
+  | "preview"
+  | "succeeded"
+  | "no_changes"
+  | "partial"
+  | "conflict"
+  | "blocked"
+  | "failed";
+export type UnresolvedReason = "unchecked" | "not_found" | "api_error" | "candidate" | "unavailable";
+
+export interface SyncTarget {
+  id: string;
+  playlist_id: string;
+  platform: Platform;
+  remote_playlist_id: string | null;
+  remote_name: string | null;
+  remote_url: string | null;
+  enabled: boolean;
+  mode: SyncMode;
+  managed: boolean;
+  mirror_allowed: boolean;
+  schedule_minutes: number | null;
+  next_run_at: string | null;
+  confirmed_at: string | null;
+  last_synced_at: string | null;
+  last_status: SyncRunStatus | null;
+  last_run_id: string | null;
+  last_error: string | null;
+  write_ready: boolean;
+  write_blockers: string[];
+  needs_confirmation: boolean;
+  active_run_id: string | null;
+}
+
+export interface SyncTargetInput {
+  platform: Platform;
+  remote_playlist_id?: string;
+  create_new?: boolean;
+  remote_name?: string;
+  mode?: SyncMode;
+  mirror_allowed?: boolean;
+  schedule_minutes?: number | null;
+  enabled?: boolean;
+}
+
+export interface PlanRemote {
+  external_id: string;
+  title: string | null;
+  artist: string | null;
+  url: string;
+}
+
+export interface PlanAdd extends PlanRemote {
+  track_id: string;
+  version: string | null;
+  new_link: boolean;
+}
+
+export interface PlanUnresolved {
+  track_id: string;
+  title: string;
+  artist: string;
+  version: string | null;
+  reason: UnresolvedReason;
+  candidate_url: string | null;
+  message: string | null;
+  alternatives: { platform: Platform; url: string }[];
+}
+
+export interface SyncPlan {
+  create_playlist: boolean;
+  remote_name: string | null;
+  add: PlanAdd[];
+  remove: (PlanRemote & { external: boolean })[];
+  reorder: boolean;
+  unresolved: PlanUnresolved[];
+  duplicates_skipped: number;
+  already_present: number;
+  external_added: PlanRemote[];
+  external_removed: PlanRemote[];
+  not_readded: PlanRemote[];
+  requires_approval: boolean;
+  noop: boolean;
+  first_sync: boolean;
+  quota_units: number | null;
+}
+
+export interface SyncRun {
+  id: string;
+  target_id: string | null;
+  playlist_id: string | null;
+  playlist_name: string;
+  platform: Platform;
+  remote_playlist_id: string | null;
+  remote_name: string | null;
+  trigger: SyncTrigger;
+  status: SyncRunStatus;
+  dry_run: boolean;
+  mode: SyncMode;
+  approved_external_removal: boolean;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+  added: number;
+  removed: number;
+  skipped: number;
+  unmatched: number;
+  errors: string[];
+  created_by: string;
+  plan: SyncPlan | Record<string, never> | null;
+}
+
+export interface UnresolvedTrack {
+  track_id: string;
+  title: string;
+  artist: string;
+  version: string | null;
+  reason: UnresolvedReason;
+  candidate_url: string | null;
+  checked_at: string | null;
+  message: string | null;
+  alternatives: TrackSource[];
 }

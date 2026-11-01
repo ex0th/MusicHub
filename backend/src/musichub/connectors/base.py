@@ -6,9 +6,9 @@ Regeln:
   speichert keine Tokens – Zugangsdaten bekommt er bei jedem Aufruf übergeben.
 * Jeder Fehler wird als ``ConnectorError`` (oder Unterklasse) geworfen. Der Aufrufer
   geht immer über die ``ConnectorRegistry``, die Fehler pro Plattform isoliert.
-* **Diese Etappe ist rein lesend:** Kein Connector verändert Playlists oder Bibliotheken
-  auf der Plattform. Schreibende Methoden werfen ``ConnectorNotImplementedError``; der
-  HTTP-Client der Connectoren lässt gegenüber den Plattform-APIs nur GET zu.
+* Schreiben auf Plattformen gibt es nur für die Synchronisierung (MusicHub → Plattform):
+  nur Playlist-Inhalte, nie Bibliotheken/Likes, nur mit Schreib-Scopes, die der Nutzer beim
+  Verbinden ausdrücklich gewährt hat, und nur über ``sync/executor.py``.
 """
 
 from __future__ import annotations
@@ -49,6 +49,8 @@ class RemoteTrack:
     available: bool = True
     #: Hinweis für das Importprotokoll (z. B. „lokale Datei“, „privates Video“)
     note: str | None = None
+    #: ID des Playlist-Eintrags (YouTube: playlistItem-ID), nur in Playlist-Inhalten
+    item_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,6 +194,18 @@ class PlatformConnector(ABC):
     capabilities: frozenset[Capability] = frozenset()
     #: angeforderte OAuth-Scopes (so wenige wie möglich)
     scopes: tuple[str, ...] = ()
+    #: Scopes mit Schreibzugriff – nur auf ausdrücklichen Wunsch (Synchronisierung)
+    write_scopes: tuple[str, ...] = ()
+    #: Zielplaylist kann in einem Schritt vollständig ersetzt werden (Spotify)
+    can_replace: bool = False
+    #: Kontingent-Einheiten je schreibendem Aufruf (YouTube), für die Vorschau
+    write_cost_units: int | None = None
+
+    def has_write_scope(self, granted: str | None) -> bool:
+        """Wurden die Schreib-Scopes tatsächlich gewährt?"""
+        have = set((granted or "").split())
+        needed = set(self.write_scopes) - set(self.scopes)
+        return bool(needed) and needed <= have
 
     @abstractmethod
     def is_configured(self) -> bool:
@@ -204,7 +218,9 @@ class PlatformConnector(ABC):
 
     # --- OAuth -------------------------------------------------------------------------
 
-    def authorization_url(self, *, state: str, code_challenge: str, redirect_uri: str) -> str:
+    def authorization_url(
+        self, *, state: str, code_challenge: str, redirect_uri: str, write: bool = False
+    ) -> str:
         raise self._unsupported("authorization_url")
 
     def exchange_code(self, *, code: str, code_verifier: str, redirect_uri: str) -> OAuthTokens:
@@ -243,8 +259,42 @@ class PlatformConnector(ABC):
     def get_playlist(self, external_id: str) -> RemotePlaylist:
         raise self._unsupported("get_playlist")
 
-    # --- Schreiben: in dieser Etappe bewusst deaktiviert -------------------------------
+    def search(self, access_token: str, query: TrackQuery, limit: int = 5) -> list[RemoteTrack]:
+        """Kandidaten für einen lokalen Track (ohne Bewertung – die macht die Matching-Engine)."""
+        raise self._unsupported("search")
 
+    # --- Schreiben: nur für die Synchronisierung (sync/executor.py) -----------------------
+
+    def create_remote_playlist(
+        self, access_token: str, name: str, description: str | None
+    ) -> RemotePlaylistInfo:
+        """Legt eine **private** Playlist an (wird dadurch von MusicHub verwaltet)."""
+        raise self._unsupported("create_remote_playlist")
+
+    def add_to_playlist(
+        self, access_token: str, playlist_id: str, external_ids: Sequence[str]
+    ) -> None:
+        """Hängt Tracks in der angegebenen Reihenfolge an."""
+        raise self._unsupported("add_to_playlist")
+
+    def replace_playlist(
+        self, access_token: str, playlist_id: str, external_ids: Sequence[str]
+    ) -> None:
+        """Ersetzt den kompletten Inhalt (nur wenn ``can_replace``)."""
+        raise self._unsupported("replace_playlist")
+
+    def remove_from_playlist(
+        self, access_token: str, playlist_id: str, item_ids: Sequence[str]
+    ) -> None:
+        """Entfernt einzelne Einträge über ihre Eintrags-ID (YouTube)."""
+        raise self._unsupported("remove_from_playlist")
+
+    def move_in_playlist(
+        self, access_token: str, playlist_id: str, item_id: str, external_id: str, position: int
+    ) -> None:
+        raise self._unsupported("move_in_playlist")
+
+    # Alte Schnittstelle (Etappe 1) – nicht mehr verwendet
     def create_playlist(self, name: str, description: str | None = None) -> RemotePlaylist:
         raise self._unsupported("create_playlist")
 

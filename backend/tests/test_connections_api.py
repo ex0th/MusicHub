@@ -368,7 +368,7 @@ def test_youtube_quota_exhaustion_postpones_job(
     db.refresh(job)
     assert job.status == "failed"
     assert (job.run_after - datetime.now(UTC)).total_seconds() > 60
-    assert "Tageskontingent" in (job.last_error or "")
+    assert "Kontingent" in (job.last_error or "")
 
 
 def test_refresh_metadata_fills_only_empty_fields(

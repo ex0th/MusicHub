@@ -25,10 +25,11 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from musichub.db.base import Base, Timestamps, UUIDPrimaryKey
-from musichub.domain.types import Availability, LinkStatus, MatchMethod, Platform, sql_in
+from musichub.domain.types import Availability, LinkStatus, MatchMethod, Platform, SyncMode, sql_in
 
 #: n:m Tracks <-> Tags. Löschen eines Tracks oder Tags entfernt nur die Zuordnung.
 track_tags = Table(
@@ -185,7 +186,11 @@ class PlaylistItem(UUIDPrimaryKey, Base):
 
 
 class PlaylistTarget(UUIDPrimaryKey, Timestamps, Base):
-    """Eine lokale Playlist wird auf eine Plattform-Playlist synchronisiert (lokal -> remote)."""
+    """Ein Synchronisationsziel: lokale Playlist → Playlist auf einer Plattform.
+
+    Eine Playlist kann mehrere Ziele haben (auch mehrere je Plattform); eine
+    Plattform-Playlist ist höchstens Ziel einer lokalen Playlist.
+    """
 
     __tablename__ = "playlist_targets"
 
@@ -193,13 +198,48 @@ class PlaylistTarget(UUIDPrimaryKey, Timestamps, Base):
     platform: Mapped[str] = mapped_column(String(32))
     #: None, solange die Plattform-Playlist noch nicht angelegt wurde.
     remote_playlist_id: Mapped[str | None] = mapped_column(String(255))
+    remote_name: Mapped[str | None] = mapped_column(String(500))
+    remote_url: Mapped[str | None] = mapped_column(String(1000))
     enabled: Mapped[bool] = mapped_column(default=True, server_default=text("true"))
+    mode: Mapped[str] = mapped_column(
+        String(16), default=SyncMode.ADD_ONLY.value, server_default=SyncMode.ADD_ONLY.value
+    )
+    #: von MusicHub angelegt – Voraussetzung für „vollständig abgleichen“
+    managed: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
+    #: ausdrücklich für „vollständig abgleichen“ freigegeben
+    mirror_allowed: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
+    #: geplante Synchronisierung alle n Minuten (None = nur manuell)
+    schedule_minutes: Mapped[int | None] = mapped_column(Integer)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: erste schreibende Synchronisierung bestätigt (Vorschau gesehen)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confirmed_by: Mapped[str | None] = mapped_column(String(255))
+    #: externe IDs auf der Zielplaylist nach dem letzten erfolgreichen Sync
+    #: (Grundlage für das Erkennen externer Änderungen)
+    known_remote_items: Mapped[list[str] | None] = mapped_column(JSONB)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_status: Mapped[str | None] = mapped_column(String(16))
+    last_run_id: Mapped[uuid.UUID | None] = mapped_column()
     last_error: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(String(255))
 
     playlist: Mapped[Playlist] = relationship(back_populates="targets")
 
     __table_args__ = (
         CheckConstraint(f"platform IN ({sql_in(Platform)})", name="platform"),
-        UniqueConstraint("playlist_id", "platform"),
+        CheckConstraint(f"mode IN ({sql_in(SyncMode)})", name="mode"),
+        CheckConstraint(
+            "mode <> 'mirror' OR (managed AND mirror_allowed)", name="mirror_only_managed"
+        ),
+        CheckConstraint(
+            "schedule_minutes IS NULL OR schedule_minutes >= 60", name="schedule_minutes"
+        ),
+        Index(
+            "uq_playlist_targets_remote",
+            "platform",
+            "remote_playlist_id",
+            unique=True,
+            postgresql_where=text("remote_playlist_id IS NOT NULL"),
+        ),
+        Index("ix_playlist_targets_playlist_id", "playlist_id"),
     )
