@@ -33,6 +33,9 @@ Während der Prüfung gefundene und behobene Fehler:
 - Fehlermeldungen der Oberfläche verwiesen bei `401` auf „Token unter Einstellungen
   eingeben“ (nur im Dev-Modus richtig) und zeigten bei jedem `403` „Keine Schreibberechtigung“
   statt der tatsächlichen Ursache (z. B. CSRF).
+- Nach dem Neuerstellen des Backend-Containers (Update) leitete nginx bis zu 10 s an die
+  alte Container-Adresse weiter (`502`), weil jeder nginx-Worker die DNS-Antwort 10 s
+  zwischenspeicherte. Gefunden durch den CI-Stack-Test; Cache auf 1 s verkürzt.
 - Ungenutzte Connector-Methoden aus Etappe 1 (`search_tracks`, `create_playlist`,
   `replace_playlist_tracks`, …) entfernt.
 

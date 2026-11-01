@@ -53,6 +53,7 @@ Die Login-Seite (`/login/?error=…`) zeigt die Ursache. Im Backend-Log steht
 
 | Symptom | Lösung |
 |---|---|
+| Einzelne `502` direkt nach einem Update | normal für ≤ 1 s, bis nginx die neue Backend-Adresse auflöst; hält es an: `docker compose logs frontend` (`connect() failed`) und Backend-Status prüfen |
 | `502 Bad Gateway` von NPM | Ziel prüfen: Variante A Containername `musichub-frontend-1:8080` im selben Netz; B/C Port und Bind-Adresse |
 | `413 Request Entity Too Large` beim Import | in NPM *Advanced*: `client_max_body_size 12m;` |
 | Viele `429 Too Many Requests` | alle Clients erscheinen mit derselben Adresse → NPM-Adresse ist nicht privat; `set_real_ip_from` in `frontend/nginx/default.conf` ergänzen |

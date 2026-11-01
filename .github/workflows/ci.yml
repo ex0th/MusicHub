@@ -160,6 +160,7 @@ jobs:
             curl -fsS http://127.0.0.1:8080/api/health/ready >/dev/null 2>&1 && break
             sleep 2
           done
+          sleep 2  # DNS-Cache von nginx (1 s je Worker) nach neu erstellten Containern
           docker compose exec -T db psql -U musichub -d musichub -tAc \
             "select rolsuper from pg_roles r join pg_stat_activity a on a.usename = r.rolname where a.datname = 'musichub' and r.rolname = 'musichub_app' limit 1" | grep -qx f
           curl -fsS -H 'Authorization: Bearer ci-smoke-token-0123456789' http://127.0.0.1:8080/api/v1/stats | grep -q '"tracks"'
@@ -181,6 +182,7 @@ jobs:
             curl -fsS http://127.0.0.1:8080/api/health/ready >/dev/null 2>&1 && break
             sleep 2
           done
+          sleep 2  # DNS-Cache von nginx (1 s je Worker) nach neu erstellten Containern
           test "$(count)" = "$BEFORE"
           ls -l backups/
 
@@ -200,6 +202,7 @@ jobs:
             curl -fsS http://127.0.0.1:8080/api/health/ready >/dev/null 2>&1 && break
             sleep 2
           done
+          sleep 2  # DNS-Cache von nginx (1 s je Worker) nach neu erstellten Containern
           curl -fsS http://127.0.0.1:8080/api/auth/session | tee /dev/stderr | grep -q '"mode":"oidc","login_enabled":true,"authenticated":false'
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/me)" = "401"
           test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer ci-smoke-token-0123456789' http://127.0.0.1:8080/api/v1/me)" = "401"
