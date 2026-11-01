@@ -11,6 +11,8 @@
 # Wichtig: MUSICHUB_TOKEN_ENCRYPTION_KEY muss derselbe sein wie beim Erstellen der
 # Sicherung, sonst sind verbundene Plattform-Konten neu zu verbinden. Details: docs/BACKUP.md
 
+# Variablen in '…' werden absichtlich erst im Datenbank-Container ausgewertet.
+# shellcheck disable=SC2016
 set -eu
 umask 077
 

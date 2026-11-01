@@ -86,6 +86,9 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       # 1) Für den Smoke-Test nur amd64 bauen und lokal laden
+      - name: Betriebsskripte prüfen (shellcheck)
+        run: shellcheck -s sh scripts/*.sh
+
       - name: Images für Smoke-Test bauen
         run: |
           docker buildx build --load --build-arg BUILD_SHA=${{ github.sha }} \

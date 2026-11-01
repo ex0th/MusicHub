@@ -12,6 +12,8 @@
 # Die Datenbank bleibt während der Sicherung in Betrieb (konsistenter Snapshot).
 # Details und Wiederherstellung: docs/BACKUP.md
 
+# Variablen in '…' werden absichtlich erst im Datenbank-Container ausgewertet.
+# shellcheck disable=SC2016
 set -eu
 umask 077
 
